@@ -3,7 +3,11 @@ import json
 import pytest
 
 from weakness_driven_problem_synthesis.schemas import SynthesisSummary, Weakness, WeaknessSet
-from weakness_driven_problem_synthesis.synthesize import has_high_similarity, synthesize_for_weaknesses
+from weakness_driven_problem_synthesis.synthesize import (
+    RECENT_SUMMARY_LIMIT,
+    has_high_similarity,
+    synthesize_for_weaknesses,
+)
 
 
 class FakeProvider:
@@ -254,6 +258,242 @@ async def test_synthesize_problems_caps_skipped_to_current_target(tmp_path):
 
     assert result.skipped == 5
     assert len(client.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_synthesize_prompt_limits_recent_history_and_uses_latest_entries(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    existing_records = []
+    for idx in range(RECENT_SUMMARY_LIMIT + 5):
+        existing_records.append(
+            {
+                "id": f"S{idx:05d}",
+                "weakness_id": "W001",
+                "batch_index": idx // 10,
+                "language": "python",
+                "difficulty": "hard",
+                "scenario": f"scenario-{idx}",
+                "problem_statement": "x" * 240,
+                "function_signature": f"def solve_{idx}(items: list[int]) -> int:",
+                "input_format": "list[int]",
+                "output_format": "int",
+                "constraints": ["1 <= n <= 1e5"],
+                "edge_cases_hinted": ["empty input"],
+                "anti_homogeneity_notes": "baseline",
+                "input_scale_class": f"scale-{idx}",
+                "data_shape_class": f"shape-{idx}",
+                "primary_pitfall": f"pitfall-{idx}",
+                "novelty_reason": f"novelty-{idx}",
+            }
+        )
+    output_path.write_text("\n".join(json.dumps(item) for item in existing_records) + "\n")
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S99997",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "fresh-scenario",
+                    "problem_statement": "y" * 240,
+                    "function_signature": "def solve_fresh(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bounded prompt",
+                    "input_scale_class": "fresh-scale",
+                    "data_shape_class": "fresh-shape",
+                    "primary_pitfall": "fresh-pitfall",
+                    "novelty_reason": "fresh-novelty",
+                }
+            ]
+        ]
+    )
+
+    await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": len(existing_records) + 1},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    prompt = client.calls[0]["prompt"]
+    assert "scenario-0" not in prompt
+    assert f"scenario-{len(existing_records) - 1}" in prompt
+    assert prompt.count("novelty=") == RECENT_SUMMARY_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_synthesize_prompt_includes_coverage_summary(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    existing_records = [
+        {
+            "id": "S00001",
+            "weakness_id": "W001",
+            "batch_index": 0,
+            "language": "python",
+            "difficulty": "hard",
+            "scenario": "scenario-a",
+            "problem_statement": "x" * 240,
+            "function_signature": "def solve_a(items: list[int]) -> int:",
+            "input_format": "list[int]",
+            "output_format": "int",
+            "constraints": ["1 <= n <= 1e5"],
+            "edge_cases_hinted": ["empty input"],
+            "anti_homogeneity_notes": "baseline",
+            "input_scale_class": "1e5-stream",
+            "data_shape_class": "flat-log",
+            "primary_pitfall": "boundary-reset",
+            "novelty_reason": "a",
+        },
+        {
+            "id": "S00002",
+            "weakness_id": "W001",
+            "batch_index": 0,
+            "language": "python",
+            "difficulty": "hard",
+            "scenario": "scenario-b",
+            "problem_statement": "y" * 240,
+            "function_signature": "def solve_b(items: list[int]) -> int:",
+            "input_format": "list[int]",
+            "output_format": "int",
+            "constraints": ["1 <= n <= 1e5"],
+            "edge_cases_hinted": ["empty input"],
+            "anti_homogeneity_notes": "baseline",
+            "input_scale_class": "1e5-stream",
+            "data_shape_class": "flat-log",
+            "primary_pitfall": "boundary-reset",
+            "novelty_reason": "b",
+        },
+    ]
+    output_path.write_text("\n".join(json.dumps(item) for item in existing_records) + "\n")
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S99996",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "fresh-scenario",
+                    "problem_statement": "z" * 240,
+                    "function_signature": "def solve_fresh(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "coverage prompt",
+                    "input_scale_class": "fresh-scale",
+                    "data_shape_class": "fresh-shape",
+                    "primary_pitfall": "fresh-pitfall",
+                    "novelty_reason": "fresh-novelty",
+                }
+            ]
+        ]
+    )
+
+    await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 3},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    prompt = client.calls[0]["prompt"]
+    assert "Coverage memory:" in prompt
+    assert "input_scale_class counts:" in prompt
+    assert "1e5-stream: 2" in prompt
+    assert "data_shape_class counts:" in prompt
+    assert "flat-log: 2" in prompt
+    assert "primary_pitfall counts:" in prompt
+    assert "boundary-reset: 2" in prompt
+
+
+@pytest.mark.asyncio
+async def test_synthesize_refill_prompt_uses_latest_accepted_problem_context(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S10001",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "accepted-first",
+                    "problem_statement": "a" * 240,
+                    "function_signature": "def solve_first(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "first accepted",
+                    "input_scale_class": "accepted-scale",
+                    "data_shape_class": "accepted-shape",
+                    "primary_pitfall": "accepted-pitfall",
+                    "novelty_reason": "accepted-novelty",
+                },
+                {
+                    "id": "S10002",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "accepted-first",
+                    "problem_statement": "b" * 240,
+                    "function_signature": "def solve_first(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["duplicate timestamps"],
+                    "anti_homogeneity_notes": "forces refill",
+                    "input_scale_class": "accepted-scale",
+                    "data_shape_class": "accepted-shape",
+                    "primary_pitfall": "accepted-pitfall",
+                    "novelty_reason": "forces-refill",
+                },
+            ],
+            [
+                {
+                    "id": "S10003",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "accepted-third",
+                    "problem_statement": "c" * 240,
+                    "function_signature": "def solve_third(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["duplicate timestamps"],
+                    "anti_homogeneity_notes": "refill success",
+                    "input_scale_class": "refill-scale",
+                    "data_shape_class": "refill-shape",
+                    "primary_pitfall": "refill-pitfall",
+                    "novelty_reason": "refill-novelty",
+                }
+            ],
+        ]
+    )
+
+    await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 2},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    refill_prompt = client.calls[1]["prompt"]
+    assert "accepted-first" in refill_prompt
+    assert "accepted-novelty" in refill_prompt
+    assert "accepted-scale: 1" in refill_prompt
 
 
 @pytest.mark.asyncio
@@ -764,8 +1004,9 @@ async def test_synthesize_problems_includes_prior_summary_in_following_batch_pro
         provider_client=client,
     )
 
-    assert "Prior problems summary" in client.calls[1]["prompt"]
+    assert "Recent generated problems" in client.calls[1]["prompt"]
     assert "scenario one" in client.calls[1]["prompt"]
+    assert "Coverage memory:" in client.calls[1]["prompt"]
 
 
 @pytest.mark.asyncio

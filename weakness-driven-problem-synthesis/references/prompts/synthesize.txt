@@ -10,6 +10,8 @@ Requirements:
 - Set `difficulty` to `hard`.
 - Each `problem_statement` must be at least 200 characters.
 - Avoid overlap with prior accepted problems.
+- Use the recent generated problems list to avoid local repetition.
+- Use the coverage memory counts to avoid overusing already-common scale, shape, and pitfall patterns.
 
 Batch diversity:
 Each item in this batch must differ from the others by:
@@ -44,3 +46,4 @@ Before answering, ensure:
 - no duplicate scenarios
 - no duplicate function signatures
 - no duplicate `(scenario, input_scale_class, data_shape_class, primary_pitfall)`
+- prefer less-used scale / shape / pitfall combinations when possible

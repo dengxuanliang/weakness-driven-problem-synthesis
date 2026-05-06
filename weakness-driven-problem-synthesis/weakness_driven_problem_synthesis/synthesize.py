@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from weakness_driven_problem_synthesis.dedup import duplicate_key, ngram_jaccard
 from weakness_driven_problem_synthesis.llm_client import complete_json
 from weakness_driven_problem_synthesis.prompts import load_prompt
-from weakness_driven_problem_synthesis.schemas import SynthesisSummary, SynthProblem, WeaknessSet
+from weakness_driven_problem_synthesis.schemas import SynthesisSummary, SynthProblem, Weakness, WeaknessSet
 
 BASE_BATCH_SIZE = 10
 MIN_STATEMENT_CHARS = 200
@@ -17,6 +18,8 @@ NGRAM_N = 4
 SIMILARITY_THRESHOLD = 0.6
 PER_SLOT_RETRY_LIMIT = 3
 MAX_EXTRA_BATCHES = 2
+RECENT_SUMMARY_LIMIT = 20
+MAX_COVERAGE_BUCKETS = 12
 
 
 def _load_existing_problems(output_path: Path) -> list[dict]:
@@ -31,27 +34,62 @@ def _load_existing_problems(output_path: Path) -> list[dict]:
     return results
 
 
-def _completed_batches_by_weakness(existing: list[dict]) -> dict[str, set[int]]:
-    grouped: dict[str, dict[int, int]] = {}
-    for problem in existing:
-        weakness_id = problem["weakness_id"]
-        batch_index = problem["batch_index"]
-        grouped.setdefault(weakness_id, {})
-        grouped[weakness_id][batch_index] = grouped[weakness_id].get(batch_index, 0) + 1
-
-    completed: dict[str, set[int]] = {}
-    for weakness_id, batch_counts in grouped.items():
-        for batch_index, count in batch_counts.items():
-            if count >= BASE_BATCH_SIZE:
-                completed.setdefault(weakness_id, set()).add(batch_index)
-    return completed
-
-
-def _prior_summary(problems: list[dict]) -> str:
+def _prior_summary(problems: list[dict], *, limit: int = RECENT_SUMMARY_LIMIT) -> str:
     if not problems:
-        return "Prior problems summary: none"
-    items = [f"{problem['id']}: {problem['scenario']}" for problem in problems]
-    return "Prior problems summary: " + "; ".join(items)
+        return "Recent generated problems: none"
+
+    recent = problems[-limit:]
+    lines = [f"Recent generated problems (latest {len(recent)}):"]
+    for problem in recent:
+        lines.append(
+            "- "
+            f"{problem['id']} | "
+            f"scenario={problem['scenario']} | "
+            f"scale={problem.get('input_scale_class', '')} | "
+            f"shape={problem.get('data_shape_class', '')} | "
+            f"pitfall={problem.get('primary_pitfall', '')} | "
+            f"novelty={problem.get('novelty_reason', '')}"
+        )
+    return "\n".join(lines)
+
+
+def _coverage_summary(problems: list[dict], *, max_buckets: int = MAX_COVERAGE_BUCKETS) -> str:
+    if not problems:
+        return "Coverage memory: none"
+
+    def format_counter(name: str, key: str) -> list[str]:
+        counts = Counter(problem.get(key, "") for problem in problems if problem.get(key, ""))
+        lines = [f"- {name} counts:"]
+        for label, count in counts.most_common(max_buckets):
+            lines.append(f"  - {label}: {count}")
+        return lines
+
+    lines = ["Coverage memory:"]
+    lines.extend(format_counter("input_scale_class", "input_scale_class"))
+    lines.extend(format_counter("data_shape_class", "data_shape_class"))
+    lines.extend(format_counter("primary_pitfall", "primary_pitfall"))
+    return "\n".join(lines)
+
+
+def _build_synthesis_prompt(
+    *,
+    prompt_template: str,
+    weakness: Weakness,
+    batch_size: int,
+    weakness_history: list[dict],
+) -> str:
+    prior_summary = _prior_summary(weakness_history)
+    coverage_summary = _coverage_summary(weakness_history)
+    return (
+        f"{prompt_template}\n\n"
+        f"Weakness ID: {weakness.id}\n"
+        f"Weakness name: {weakness.name}\n"
+        f"Description: {weakness.description}\n"
+        f"Language: {weakness.dominant_language}\n"
+        f"Batch size: {batch_size}\n"
+        f"{prior_summary}\n"
+        f"{coverage_summary}\n"
+    )
 
 
 def has_high_similarity(candidate_statement: str, existing_problems: list[dict]) -> bool:
@@ -98,16 +136,13 @@ async def synthesize_for_weaknesses(
         while current < target:
             batch_size = min(BASE_BATCH_SIZE, target - current)
             prompt_template = load_prompt("synthesize.txt")
-            prior_summary = _prior_summary(existing_by_weakness.get(weakness.id, []))
+            weakness_history = existing_by_weakness.get(weakness.id, [])
             payload = await complete_json(
-                (
-                    f"{prompt_template}\n\n"
-                    f"Weakness ID: {weakness.id}\n"
-                    f"Weakness name: {weakness.name}\n"
-                    f"Description: {weakness.description}\n"
-                    f"Language: {weakness.dominant_language}\n"
-                    f"Batch size: {batch_size}\n"
-                    f"{prior_summary}\n"
+                _build_synthesis_prompt(
+                    prompt_template=prompt_template,
+                    weakness=weakness,
+                    batch_size=batch_size,
+                    weakness_history=weakness_history,
                 ),
                 {"type": "array"},
                 provider=provider,
@@ -158,15 +193,13 @@ async def synthesize_for_weaknesses(
                             extra_batches += 1
                         break
 
+                    weakness_history = existing_by_weakness.get(weakness.id, [])
                     refill_payload = await complete_json(
-                        (
-                            f"{prompt_template}\n\n"
-                            f"Weakness ID: {weakness.id}\n"
-                            f"Weakness name: {weakness.name}\n"
-                            f"Description: {weakness.description}\n"
-                            f"Language: {weakness.dominant_language}\n"
-                            f"Batch size: 1\n"
-                            f"{prior_summary}\n"
+                        _build_synthesis_prompt(
+                            prompt_template=prompt_template,
+                            weakness=weakness,
+                            batch_size=1,
+                            weakness_history=weakness_history,
                         ),
                         {"type": "array"},
                         provider=provider,
