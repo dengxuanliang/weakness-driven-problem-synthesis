@@ -1,0 +1,11 @@
+You are analyzing why a model failed a coding problem.
+
+Return JSON only with:
+- `question_id`
+- `is_truly_failed`
+- `error_tags`
+- `root_cause`
+- `ability_dimensions`
+- `evidence_snippet`
+
+Reuse existing tags when possible. Prefer the provided vocabulary.

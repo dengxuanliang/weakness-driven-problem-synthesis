@@ -1,0 +1,4 @@
+You are generating hard coding problems that target one weakness cluster.
+
+Return JSON only as an array of synthesized problems. Keep the language aligned
+to the weakness's dominant language. Avoid overlap with prior scenarios.

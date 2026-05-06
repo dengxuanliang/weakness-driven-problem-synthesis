@@ -8,6 +8,7 @@ from typing import Any
 
 from weakness_driven_problem_synthesis.dedup import duplicate_key
 from weakness_driven_problem_synthesis.llm_client import complete_json
+from weakness_driven_problem_synthesis.prompts import load_prompt
 from weakness_driven_problem_synthesis.schemas import SynthesisSummary, SynthProblem, WeaknessSet
 
 MIN_STATEMENT_CHARS = 200
@@ -52,8 +53,15 @@ async def synthesize_for_weaknesses(
         while current < target:
             attempted_keys: set[tuple[str, str]] = set()
             while current < target:
+                prompt_template = load_prompt("synthesize.txt")
                 payload = await complete_json(
-                    f"Synthesize one problem for {weakness.id}",
+                    (
+                        f"{prompt_template}\n\n"
+                        f"Weakness ID: {weakness.id}\n"
+                        f"Weakness name: {weakness.name}\n"
+                        f"Description: {weakness.description}\n"
+                        f"Language: {weakness.dominant_language}\n"
+                    ),
                     {"type": "array"},
                     provider=provider,
                     model=model,

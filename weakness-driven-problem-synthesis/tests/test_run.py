@@ -11,6 +11,8 @@ def test_skill_package_files_exist():
     assert (root / "pyproject.toml").exists()
     assert (root / "SKILL.md").exists()
     assert (root / "scripts").is_dir()
+    assert (root / "scripts" / "run.py").exists()
+    assert (root / "references" / "prompts" / "attribute.txt").exists()
 
 
 def test_cli_parses_expected_arguments():

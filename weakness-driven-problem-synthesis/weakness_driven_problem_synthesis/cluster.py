@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from weakness_driven_problem_synthesis.llm_client import complete_json
+from weakness_driven_problem_synthesis.prompts import load_prompt
 from weakness_driven_problem_synthesis.schemas import Attribution, Weakness, WeaknessSet
 
 
@@ -33,8 +34,20 @@ async def cluster_weaknesses(
     if output_path.exists():
         return WeaknessSet.model_validate_json(output_path.read_text())
 
+    prompt_template = load_prompt("cluster.txt")
+    tag_summaries = []
+    for attribution in attributions:
+        for tag in attribution.error_tags:
+            tag_summaries.append(
+                {
+                    "question_id": attribution.question_id,
+                    "tag": tag,
+                    "root_cause": attribution.root_cause,
+                    "ability_dimensions": attribution.ability_dimensions,
+                }
+            )
     payload = await complete_json(
-        "Cluster weakness tags",
+        f"{prompt_template}\n\nTag evidence:\n{tag_summaries}",
         {"type": "array"},
         provider=provider,
         model=model,

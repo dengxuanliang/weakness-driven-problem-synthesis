@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from weakness_driven_problem_synthesis.llm_client import complete_json
+from weakness_driven_problem_synthesis.prompts import load_prompt, load_reference
 from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord
 
 
@@ -30,8 +31,20 @@ async def _attribute_record(
     model: str | None,
     provider_client: Any | None,
 ) -> Attribution:
+    vocabulary = load_reference("error_tag_vocabulary.md")
+    prompt_template = load_prompt("attribute.txt")
+    prompt = (
+        f"{prompt_template}\n\n"
+        f"Vocabulary:\n{vocabulary}\n\n"
+        f"Question ID: {record.question_id}\n"
+        f"Content:\n{record.content}\n\n"
+        f"Canonical solution:\n{record.canonical_solution}\n\n"
+        f"Completion:\n{record.completion}\n\n"
+        f"Labels: category={record.labels.category}, language={record.labels.programming_language}, difficulty={record.labels.difficulty}\n"
+        f"Test:\n{record.test}\n"
+    )
     payload = await complete_json(
-        record.content,
+        prompt,
         {"type": "object"},
         provider=provider,
         model=model,

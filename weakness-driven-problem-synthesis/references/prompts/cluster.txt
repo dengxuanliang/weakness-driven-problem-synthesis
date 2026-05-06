@@ -1,0 +1,9 @@
+You are clustering failure tags into weakness groups.
+
+Return JSON only as an array of weakness objects with:
+- `id`
+- `name`
+- `description`
+- `covered_tags`
+- `dominant_language`
+- `dominant_category`
