@@ -3,7 +3,7 @@ import json
 import pytest
 
 from weakness_driven_problem_synthesis.schemas import SynthesisSummary, Weakness, WeaknessSet
-from weakness_driven_problem_synthesis.synthesize import synthesize_for_weaknesses
+from weakness_driven_problem_synthesis.synthesize import has_high_similarity, synthesize_for_weaknesses
 
 
 class FakeProvider:
@@ -415,3 +415,13 @@ async def test_synthesize_problems_retries_high_jaccard_similarity(tmp_path):
     assert result.retry_count >= 1
     lines = [json.loads(line) for line in output_path.read_text().strip().splitlines()]
     assert lines[-1]["id"] == "S00002"
+
+
+def test_has_high_similarity_detects_ngram_overlap():
+    existing = [
+        {
+            "problem_statement": "alpha beta gamma delta epsilon zeta eta theta",
+        }
+    ]
+    candidate = "alpha beta gamma delta epsilon zeta eta lambda"
+    assert has_high_similarity(candidate, existing) is True

@@ -7,6 +7,7 @@ from weakness_driven_problem_synthesis.run import (
     estimate_call_counts,
     main_with_args,
     prepare_output_dir,
+    should_continue_after_estimate,
 )
 from weakness_driven_problem_synthesis.schemas import Attribution, SynthesisSummary, Weakness, WeaknessSet
 
@@ -63,6 +64,10 @@ def test_estimate_call_counts_uses_failed_count_and_batch_size():
     estimates = estimate_call_counts(failed_count=23, total_questions=27, batch_size=10)
     assert estimates["attribution_calls"] == 23
     assert estimates["synthesis_batches"] == 3
+
+
+def test_should_continue_after_estimate_accepts_non_interactive_mode():
+    assert should_continue_after_estimate(non_interactive=True) is True
 
 
 @pytest.mark.asyncio

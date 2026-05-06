@@ -6,13 +6,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-from weakness_driven_problem_synthesis.dedup import duplicate_key
+from weakness_driven_problem_synthesis.dedup import duplicate_key, ngram_jaccard
 from weakness_driven_problem_synthesis.llm_client import complete_json
 from weakness_driven_problem_synthesis.prompts import load_prompt
 from weakness_driven_problem_synthesis.schemas import SynthesisSummary, SynthProblem, WeaknessSet
 
 BASE_BATCH_SIZE = 10
 MIN_STATEMENT_CHARS = 200
+NGRAM_N = 4
+SIMILARITY_THRESHOLD = 0.6
 PER_SLOT_RETRY_LIMIT = 3
 MAX_EXTRA_BATCHES = 2
 
@@ -34,6 +36,13 @@ def _prior_summary(problems: list[dict]) -> str:
         return "Prior problems summary: none"
     items = [f"{problem['id']}: {problem['scenario']}" for problem in problems]
     return "Prior problems summary: " + "; ".join(items)
+
+
+def has_high_similarity(candidate_statement: str, existing_problems: list[dict]) -> bool:
+    for problem in existing_problems:
+        if ngram_jaccard(candidate_statement, problem["problem_statement"], n=NGRAM_N) >= SIMILARITY_THRESHOLD:
+            return True
+    return False
 
 
 async def synthesize_for_weaknesses(
@@ -106,8 +115,10 @@ async def synthesize_for_weaknesses(
                     attempted_keys.add(key)
 
                     is_short = len(candidate.problem_statement) < MIN_STATEMENT_CHARS
+                    same_weakness_existing = existing_by_weakness.get(weakness.id, [])
                     is_duplicate = key in seen_keys or attempted_duplicate
-                    if not is_short and not is_duplicate:
+                    is_similar = has_high_similarity(candidate.problem_statement, same_weakness_existing)
+                    if not is_short and not is_duplicate and not is_similar:
                         record = candidate.model_dump()
                         record["batch_index"] = batch_index
                         with output_path.open("a") as handle:

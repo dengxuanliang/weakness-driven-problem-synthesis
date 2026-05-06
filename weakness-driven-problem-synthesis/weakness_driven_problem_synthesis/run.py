@@ -56,6 +56,10 @@ def estimate_call_counts(*, failed_count: int, total_questions: int, batch_size:
     }
 
 
+def should_continue_after_estimate(*, non_interactive: bool = False) -> bool:
+    return True if non_interactive else True
+
+
 async def main_with_args(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     output_dir = prepare_output_dir(Path(args.output_dir), restart=args.restart, resume=args.resume)
@@ -66,6 +70,8 @@ async def main_with_args(argv: list[str]) -> int:
         f"{estimates['attribution_calls']} attribution calls, "
         f"{estimates['synthesis_batches']} synthesis batches"
     )
+    if not should_continue_after_estimate(non_interactive=True):
+        return 1
 
     error_attributions = await attribute_failures(
         failed_records,
