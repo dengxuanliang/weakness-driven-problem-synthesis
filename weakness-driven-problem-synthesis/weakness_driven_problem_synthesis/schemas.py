@@ -59,3 +59,9 @@ class Weakness(BaseModel):
 class WeaknessSet(BaseModel):
     weaknesses: list[Weakness]
     evidence_question_ids: dict[str, list[int]]
+
+
+class SynthesisSummary(BaseModel):
+    completed: int
+    retry_count: int
+    dropped: int = 0

@@ -64,6 +64,8 @@ async def complete_json(
             max_tokens=max_tokens,
             model=resolved_model,
         )
+        if isinstance(raw_output, (dict, list)):
+            return raw_output
         try:
             return json.loads(raw_output)
         except json.JSONDecodeError:
