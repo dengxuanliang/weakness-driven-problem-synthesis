@@ -84,8 +84,9 @@ async def main_with_args(argv: list[str]) -> int:
         model=args.model,
         concurrency=args.concurrency,
     )
+    truly_failed_attributions = [item for item in error_attributions if item.is_truly_failed]
     weakness_set = await cluster_weaknesses(
-        error_attributions,
+        truly_failed_attributions,
         eval_records=failed_records,
         output_path=output_dir / "weaknesses.json",
         provider=args.provider,

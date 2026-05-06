@@ -71,7 +71,6 @@ async def synthesize_for_weaknesses(
     provider_client: Any | None = None,
 ) -> SynthesisSummary:
     existing = _load_existing_problems(output_path)
-    completed_batches = _completed_batches_by_weakness(existing)
     completed = len(existing)
     retry_count = 0
     dropped = 0
@@ -88,7 +87,7 @@ async def synthesize_for_weaknesses(
     for weakness in weakness_set.weaknesses:
         target = allocations.get(weakness.id, 0)
         current = len(existing_by_weakness.get(weakness.id, []))
-        skipped += len(completed_batches.get(weakness.id, set())) * BASE_BATCH_SIZE
+        skipped += min(current, target)
         if current >= target:
             completed_by_weakness.setdefault(weakness.id, current)
             continue

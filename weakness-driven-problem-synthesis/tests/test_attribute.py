@@ -62,6 +62,45 @@ class ControlledProvider:
         }
 
 
+class SimultaneousCompletionProvider:
+    def __init__(self):
+        self.calls = []
+        self._started = {
+            1: asyncio.Event(),
+            2: asyncio.Event(),
+            3: asyncio.Event(),
+        }
+        self._release_first_wave = asyncio.Event()
+
+    async def complete_json(self, *, prompt, schema, system, max_tokens, model):
+        question_id_line = next(line for line in prompt.splitlines() if line.startswith("Question ID:"))
+        question_id = int(question_id_line.split(":", 1)[1].strip())
+        self.calls.append(
+            {
+                "question_id": question_id,
+                "prompt": prompt,
+                "schema": schema,
+                "system": system,
+                "max_tokens": max_tokens,
+                "model": model,
+            }
+        )
+        self._started[question_id].set()
+        if question_id in (1, 2):
+            await self._release_first_wave.wait()
+        else:
+            assert self._started[1].is_set()
+            assert self._started[2].is_set()
+        return {
+            "question_id": question_id,
+            "is_truly_failed": True,
+            "error_tags": [f"tag:{question_id}"],
+            "root_cause": f"root {question_id}",
+            "ability_dimensions": [f"ability {question_id}"],
+            "evidence_snippet": f"evidence {question_id}",
+        }
+
+
 @pytest.mark.asyncio
 async def test_complete_json_retries_invalid_json():
     client = FakeProvider(outputs=["not json", '{"ok": true}'])
@@ -235,4 +274,39 @@ async def test_attribute_failures_uses_latest_completed_seen_tags_when_refilling
 
     client._gates[2].set()
     client._gates[3].set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_attribute_failures_merges_all_completed_tags_before_refilling_concurrency(tmp_path):
+    output_path = tmp_path / "error_attributions.jsonl"
+    client = SimultaneousCompletionProvider()
+    records = [
+        make_eval_record(1, "first"),
+        make_eval_record(2, "second"),
+        make_eval_record(3, "third"),
+    ]
+
+    task = asyncio.create_task(
+        attribute_failures(
+            records,
+            output_path=output_path,
+            provider_client=client,
+            provider="openai",
+            model="test-model",
+            concurrency=2,
+        )
+    )
+
+    await client._started[1].wait()
+    await client._started[2].wait()
+    client._release_first_wave.set()
+
+    while len(client.calls) < 3:
+        await asyncio.sleep(0)
+
+    prompt_by_id = {call["question_id"]: call["prompt"] for call in client.calls}
+    assert "tag:1" in prompt_by_id[3]
+    assert "tag:2" in prompt_by_id[3]
+
     await task

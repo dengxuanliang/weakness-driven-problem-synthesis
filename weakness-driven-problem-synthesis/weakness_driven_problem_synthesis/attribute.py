@@ -102,12 +102,18 @@ async def attribute_failures(
     while active_tasks:
         done, active_tasks = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
         completed = sorted(done, key=lambda task: task.result()[0])
+        round_attributions: list[Attribution] = []
         for task in completed:
             _, attribution = task.result()
             with output_path.open("a") as handle:
                 handle.write(attribution.model_dump_json() + "\n")
-            seen_tags.update(attribution.error_tags)
+            round_attributions.append(attribution)
             results.append(attribution)
+
+        for attribution in round_attributions:
+            seen_tags.update(attribution.error_tags)
+
+        for _ in range(len(completed)):
             dispatch_next()
 
     results.sort(key=lambda item: item.question_id)

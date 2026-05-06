@@ -74,7 +74,7 @@ async def test_synthesize_problems_respects_existing_batches_on_resume(tmp_path)
         completed=1,
         retry_count=0,
         dropped=0,
-        skipped=0,
+        skipped=1,
         extra_batches=0,
         completed_by_weakness={"W001": 1},
         shortfall_by_weakness={"W001": 0},
@@ -209,9 +209,51 @@ async def test_synthesize_problems_does_not_treat_partial_batch_as_complete(tmp_
         provider_client=client,
     )
 
-    assert result.skipped == 0
+    assert result.skipped == 9
     lines = [json.loads(line) for line in output_path.read_text().strip().splitlines()]
     assert lines[-1]["batch_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_caps_skipped_to_current_target(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    existing_records = []
+    for idx in range(10):
+        existing_records.append(
+            {
+                "id": f"S{idx:05d}",
+                "weakness_id": "W001",
+                "batch_index": 0,
+                "language": "python",
+                "difficulty": "hard",
+                "scenario": f"scenario-{idx}",
+                "problem_statement": "x" * 240,
+                "function_signature": f"def solve_{idx}(items: list[int]) -> int:",
+                "input_format": "list[int]",
+                "output_format": "int",
+                "constraints": ["1 <= n <= 1e5"],
+                "edge_cases_hinted": ["empty input"],
+                "anti_homogeneity_notes": "baseline",
+                "input_scale_class": f"scale-{idx}",
+                "data_shape_class": f"shape-{idx}",
+                "primary_pitfall": f"pitfall-{idx}",
+                "novelty_reason": "existing batch item",
+            }
+        )
+    output_path.write_text("\n".join(json.dumps(item) for item in existing_records) + "\n")
+    client = FakeProvider(outputs=[])
+
+    result = await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 5},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert result.skipped == 5
+    assert len(client.calls) == 0
 
 
 @pytest.mark.asyncio
