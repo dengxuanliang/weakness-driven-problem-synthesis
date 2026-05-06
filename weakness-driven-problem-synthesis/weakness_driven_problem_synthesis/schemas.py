@@ -45,3 +45,17 @@ class Attribution(BaseModel):
     root_cause: str
     ability_dimensions: list[str]
     evidence_snippet: str
+
+
+class Weakness(BaseModel):
+    id: str
+    name: str
+    description: str
+    covered_tags: list[str]
+    dominant_language: str
+    dominant_category: str
+
+
+class WeaknessSet(BaseModel):
+    weaknesses: list[Weakness]
+    evidence_question_ids: dict[str, list[int]]
