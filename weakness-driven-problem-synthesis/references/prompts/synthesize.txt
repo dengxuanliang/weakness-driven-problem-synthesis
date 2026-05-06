@@ -1,4 +1,46 @@
-You are generating hard coding problems that target one weakness cluster.
+Generate hard coding problems for one weakness cluster.
 
-Return JSON only as an array of synthesized problems. Keep the language aligned
-to the weakness's dominant language. Avoid overlap with prior scenarios.
+Return JSON only.
+Return exactly the requested number of items.
+No markdown. No extra text.
+
+Requirements:
+- Every item must target the given weakness.
+- Use the requested language.
+- Set `difficulty` to `hard`.
+- Each `problem_statement` must be at least 200 characters.
+- Avoid overlap with prior accepted problems.
+
+Batch diversity:
+Each item in this batch must differ from the others by:
+- scenario
+- input_scale_class
+- data_shape_class
+- primary_pitfall
+
+Return a JSON array matching this schema:
+[
+  {
+    "id": "S00001",
+    "weakness_id": "W007",
+    "language": "python",
+    "difficulty": "hard",
+    "scenario": "real-time log compaction",
+    "problem_statement": "Full problem statement...",
+    "function_signature": "def compress_log(events: list[dict]) -> list[dict]:",
+    "input_format": "Input description.",
+    "output_format": "Output description.",
+    "constraints": ["1 <= len(events) <= 1e5"],
+    "edge_cases_hinted": ["empty input", "duplicate timestamps"],
+    "anti_homogeneity_notes": "Different from others by scenario and pitfall.",
+    "input_scale_class": "1e5-event-stream",
+    "data_shape_class": "nested-records",
+    "primary_pitfall": "ordering-stability",
+    "novelty_reason": "Focuses on online stable compaction."
+  }
+]
+
+Before answering, ensure:
+- no duplicate scenarios
+- no duplicate function signatures
+- no duplicate `(scenario, input_scale_class, data_shape_class, primary_pitfall)`

@@ -36,6 +36,10 @@ class SynthProblem(BaseModel):
     constraints: list[str]
     edge_cases_hinted: list[str]
     anti_homogeneity_notes: str
+    input_scale_class: str
+    data_shape_class: str
+    primary_pitfall: str
+    novelty_reason: str
 
 
 class Attribution(BaseModel):

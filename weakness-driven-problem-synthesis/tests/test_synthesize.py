@@ -100,6 +100,10 @@ async def test_synthesize_problems_regenerates_duplicates_and_short_statements(t
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "first try",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "Boundary-heavy sequence scan.",
                 }
             ],
             [
@@ -116,6 +120,10 @@ async def test_synthesize_problems_regenerates_duplicates_and_short_statements(t
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "second try",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "Still too close in setup.",
                 }
             ],
             [
@@ -132,6 +140,10 @@ async def test_synthesize_problems_regenerates_duplicates_and_short_statements(t
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "third try",
+                    "input_scale_class": "sparse-graph",
+                    "data_shape_class": "graph",
+                    "primary_pitfall": "termination-condition",
+                    "novelty_reason": "Switches to graph recursion instead of linear scan.",
                 }
             ],
         ]
@@ -174,6 +186,10 @@ async def test_synthesize_problems_writes_batch_index_for_batch_generation(tmp_p
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "one",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "Large sequence with boundary-sensitive updates.",
                 },
                 {
                     "id": "S00002",
@@ -188,6 +204,10 @@ async def test_synthesize_problems_writes_batch_index_for_batch_generation(tmp_p
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["duplicate timestamps"],
                     "anti_homogeneity_notes": "two",
+                    "input_scale_class": "event-stream",
+                    "data_shape_class": "nested-records",
+                    "primary_pitfall": "ordering-stability",
+                    "novelty_reason": "Streaming record ordering under duplicate timestamps.",
                 },
             ]
         ]
@@ -226,6 +246,10 @@ async def test_synthesize_problems_drops_after_retry_budget_and_counts_extra_bat
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "Too short and under-specified.",
                 }
             ],
             [
@@ -242,6 +266,10 @@ async def test_synthesize_problems_drops_after_retry_budget_and_counts_extra_bat
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "Still under-specified.",
                 }
             ],
             [
@@ -258,6 +286,10 @@ async def test_synthesize_problems_drops_after_retry_budget_and_counts_extra_bat
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "Again too short.",
                 }
             ],
             [
@@ -274,6 +306,10 @@ async def test_synthesize_problems_drops_after_retry_budget_and_counts_extra_bat
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "good",
+                    "input_scale_class": "tree-dp",
+                    "data_shape_class": "tree",
+                    "primary_pitfall": "state-carryover",
+                    "novelty_reason": "Moves to tree state propagation instead of arrays.",
                 }
             ],
         ]
@@ -313,6 +349,10 @@ async def test_synthesize_problems_includes_prior_summary_in_following_batch_pro
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "one",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "Sequence-focused recursion setup.",
                 }
             ],
             [
@@ -329,6 +369,10 @@ async def test_synthesize_problems_includes_prior_summary_in_following_batch_pro
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["duplicate timestamps"],
                     "anti_homogeneity_notes": "two",
+                    "input_scale_class": "event-stream",
+                    "data_shape_class": "nested-records",
+                    "primary_pitfall": "ordering-stability",
+                    "novelty_reason": "Switches to stream ordering and nested records.",
                 }
             ],
         ]
@@ -364,6 +408,10 @@ async def test_synthesize_problems_retries_high_jaccard_similarity(tmp_path):
         "constraints": ["1 <= n <= 1e5"],
         "edge_cases_hinted": ["empty input"],
         "anti_homogeneity_notes": "baseline",
+        "input_scale_class": "1e5-sequence",
+        "data_shape_class": "flat-array",
+        "primary_pitfall": "off-by-one",
+        "novelty_reason": "Existing baseline sequence problem.",
     }
     output_path.write_text(json.dumps(existing) + "\n")
     client = FakeProvider(
@@ -382,6 +430,10 @@ async def test_synthesize_problems_retries_high_jaccard_similarity(tmp_path):
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "similar",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "Still too close to the prior sequence pattern.",
                 }
             ],
             [
@@ -398,6 +450,10 @@ async def test_synthesize_problems_retries_high_jaccard_similarity(tmp_path):
                     "constraints": ["1 <= n <= 1e5"],
                     "edge_cases_hinted": ["empty input"],
                     "anti_homogeneity_notes": "fresh",
+                    "input_scale_class": "event-stream",
+                    "data_shape_class": "nested-records",
+                    "primary_pitfall": "ordering-stability",
+                    "novelty_reason": "Moves to record ordering rather than sequence overlap.",
                 }
             ],
         ]

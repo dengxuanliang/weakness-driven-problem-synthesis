@@ -35,5 +35,9 @@ def test_synth_problem_requires_all_fields():
             "constraints": ["1 <= n <= 1e5"],
             "edge_cases_hinted": ["empty input"],
             "anti_homogeneity_notes": "unique angle",
+            "input_scale_class": "1e5-sequence",
+            "data_shape_class": "flat-array",
+            "primary_pitfall": "off-by-one",
+            "novelty_reason": "Uses boundary-sensitive traversal under large input.",
         }
     )
