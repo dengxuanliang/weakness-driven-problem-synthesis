@@ -36,3 +36,12 @@ class SynthProblem(BaseModel):
     constraints: list[str]
     edge_cases_hinted: list[str]
     anti_homogeneity_notes: str
+
+
+class Attribution(BaseModel):
+    question_id: int
+    is_truly_failed: bool
+    error_tags: list[str]
+    root_cause: str
+    ability_dimensions: list[str]
+    evidence_snippet: str
