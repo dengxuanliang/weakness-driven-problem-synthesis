@@ -70,6 +70,21 @@ def test_should_continue_after_estimate_accepts_non_interactive_mode():
     assert should_continue_after_estimate(non_interactive=True) is True
 
 
+def test_cli_parses_yes_flag():
+    args = build_parser().parse_args(["--eval-log", "eval.jsonl", "--total-questions", "5", "--yes"])
+    assert args.yes is True
+
+
+def test_should_continue_after_estimate_reads_user_confirmation(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    assert should_continue_after_estimate(non_interactive=False) is True
+
+
+def test_should_continue_after_estimate_rejects_user_confirmation(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    assert should_continue_after_estimate(non_interactive=False) is False
+
+
 @pytest.mark.asyncio
 async def test_pipeline_runs_end_to_end_with_stubbed_llm(tmp_path, monkeypatch):
     eval_log = tmp_path / "eval.jsonl"
@@ -129,8 +144,37 @@ async def test_pipeline_runs_end_to_end_with_stubbed_llm(tmp_path, monkeypatch):
             "openai",
             "--model",
             "test-model",
+            "--yes",
         ]
     )
 
     assert exit_code == 0
     assert (tmp_path / "out" / "report.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stops_when_confirmation_rejected(tmp_path, monkeypatch):
+    eval_log = tmp_path / "eval.jsonl"
+    eval_log.write_text(
+        '{"question_id":1,"content":"a","canonical_solution":"x","completion":"y","test":"t","labels":{"category":"c","programming_language":"python","difficulty":"hard"},"pass_at_1":0}\n'
+    )
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("synthesis stages should not run after confirmation rejection")
+
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.attribute_failures", fail_if_called)
+
+    exit_code = await main_with_args(
+        [
+            "--eval-log",
+            str(eval_log),
+            "--total-questions",
+            "1",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (tmp_path / "out" / "report.md").exists()

@@ -7,7 +7,7 @@ from typing import Any
 
 from weakness_driven_problem_synthesis.llm_client import complete_json
 from weakness_driven_problem_synthesis.prompts import load_prompt
-from weakness_driven_problem_synthesis.schemas import Attribution, Weakness, WeaknessSet
+from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord, Weakness, WeaknessSet
 
 
 def map_questions_to_clusters(
@@ -26,6 +26,7 @@ def map_questions_to_clusters(
 async def cluster_weaknesses(
     attributions: list[Attribution],
     *,
+    eval_records: list[EvalRecord],
     output_path: Path,
     provider: str,
     model: str | None,
@@ -35,16 +36,26 @@ async def cluster_weaknesses(
         return WeaknessSet.model_validate_json(output_path.read_text())
 
     prompt_template = load_prompt("cluster.txt")
+    records_by_id = {record.question_id: record for record in eval_records if record.question_id is not None}
     tag_summaries: dict[str, list[dict[str, object]]] = {}
     for attribution in attributions:
         for tag in attribution.error_tags:
             tag_summaries.setdefault(tag, [])
             if len(tag_summaries[tag]) < 3:
+                source_record = records_by_id.get(attribution.question_id)
+                one_line_content = ""
+                category = ""
+                language = ""
+                if source_record is not None:
+                    one_line_content = source_record.content.strip().splitlines()[0][:120]
+                    category = source_record.labels.category
+                    language = source_record.labels.programming_language
                 tag_summaries[tag].append(
                     {
-                        "question_id": attribution.question_id,
-                        "root_cause": attribution.root_cause,
-                        "ability_dimensions": attribution.ability_dimensions,
+                        "id": attribution.question_id,
+                        "category": category,
+                        "language": language,
+                        "one_line_content": one_line_content,
                     }
                 )
 

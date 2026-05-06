@@ -72,3 +72,4 @@ class SynthesisSummary(BaseModel):
     skipped: int = 0
     extra_batches: int = 0
     completed_by_weakness: dict[str, int] = {}
+    shortfall_by_weakness: dict[str, int] = {}

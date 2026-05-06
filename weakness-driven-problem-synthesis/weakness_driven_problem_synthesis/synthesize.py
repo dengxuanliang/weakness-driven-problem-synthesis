@@ -31,6 +31,22 @@ def _load_existing_problems(output_path: Path) -> list[dict]:
     return results
 
 
+def _completed_batches_by_weakness(existing: list[dict]) -> dict[str, set[int]]:
+    grouped: dict[str, dict[int, int]] = {}
+    for problem in existing:
+        weakness_id = problem["weakness_id"]
+        batch_index = problem["batch_index"]
+        grouped.setdefault(weakness_id, {})
+        grouped[weakness_id][batch_index] = grouped[weakness_id].get(batch_index, 0) + 1
+
+    completed: dict[str, set[int]] = {}
+    for weakness_id, batch_counts in grouped.items():
+        for batch_index, count in batch_counts.items():
+            if count >= BASE_BATCH_SIZE:
+                completed.setdefault(weakness_id, set()).add(batch_index)
+    return completed
+
+
 def _prior_summary(problems: list[dict]) -> str:
     if not problems:
         return "Prior problems summary: none"
@@ -55,6 +71,7 @@ async def synthesize_for_weaknesses(
     provider_client: Any | None = None,
 ) -> SynthesisSummary:
     existing = _load_existing_problems(output_path)
+    completed_batches = _completed_batches_by_weakness(existing)
     completed = len(existing)
     retry_count = 0
     dropped = 0
@@ -71,8 +88,8 @@ async def synthesize_for_weaknesses(
     for weakness in weakness_set.weaknesses:
         target = allocations.get(weakness.id, 0)
         current = len(existing_by_weakness.get(weakness.id, []))
+        skipped += len(completed_batches.get(weakness.id, set())) * BASE_BATCH_SIZE
         if current >= target:
-            skipped += current
             completed_by_weakness.setdefault(weakness.id, current)
             continue
 
@@ -173,4 +190,8 @@ async def synthesize_for_weaknesses(
         skipped=skipped,
         extra_batches=extra_batches,
         completed_by_weakness=completed_by_weakness,
+        shortfall_by_weakness={
+            weakness.id: max(allocations.get(weakness.id, 0) - completed_by_weakness.get(weakness.id, 0), 0)
+            for weakness in weakness_set.weaknesses
+        },
     )

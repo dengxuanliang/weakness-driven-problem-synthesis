@@ -34,6 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--restart", action="store_true")
+    parser.add_argument("--yes", action="store_true")
     return parser
 
 
@@ -57,7 +58,10 @@ def estimate_call_counts(*, failed_count: int, total_questions: int, batch_size:
 
 
 def should_continue_after_estimate(*, non_interactive: bool = False) -> bool:
-    return True if non_interactive else True
+    if non_interactive:
+        return True
+    answer = input("Proceed with synthesis? [y/N]: ").strip().lower()
+    return answer in {"y", "yes"}
 
 
 async def main_with_args(argv: list[str]) -> int:
@@ -70,7 +74,7 @@ async def main_with_args(argv: list[str]) -> int:
         f"{estimates['attribution_calls']} attribution calls, "
         f"{estimates['synthesis_batches']} synthesis batches"
     )
-    if not should_continue_after_estimate(non_interactive=True):
+    if not should_continue_after_estimate(non_interactive=args.yes):
         return 1
 
     error_attributions = await attribute_failures(
@@ -82,6 +86,7 @@ async def main_with_args(argv: list[str]) -> int:
     )
     weakness_set = await cluster_weaknesses(
         error_attributions,
+        eval_records=failed_records,
         output_path=output_dir / "weaknesses.json",
         provider=args.provider,
         model=args.model,
@@ -110,6 +115,7 @@ async def main_with_args(argv: list[str]) -> int:
         report_path=report_path,
         failed_count=len(failed_records),
         weakness_set=weakness_set,
+        allocations=allocations,
         synthesis_summary=synthesis_summary,
         sampled_problems=sampled,
     )

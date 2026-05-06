@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Any
 
@@ -30,12 +29,15 @@ async def _attribute_record(
     provider: str,
     model: str | None,
     provider_client: Any | None,
+    seen_tags: set[str],
 ) -> Attribution:
     vocabulary = load_reference("error_tag_vocabulary.md")
     prompt_template = load_prompt("attribute.txt")
+    seen_tags_section = ", ".join(sorted(seen_tags)) if seen_tags else "none"
     prompt = (
         f"{prompt_template}\n\n"
         f"Vocabulary:\n{vocabulary}\n\n"
+        f"Seen tags:\n{seen_tags_section}\n\n"
         f"Question ID: {record.question_id}\n"
         f"Content:\n{record.content}\n\n"
         f"Canonical solution:\n{record.canonical_solution}\n\n"
@@ -65,26 +67,48 @@ async def attribute_failures(
     existing = _load_existing_attributions(output_path)
     processed_ids = {item.question_id for item in existing}
     results = list(existing)
-    semaphore = asyncio.Semaphore(concurrency)
+    seen_tags = {tag for item in existing for tag in item.error_tags}
+    active_tasks: set[asyncio.Task[tuple[int, Attribution]]] = set()
 
-    async def run_record(record: EvalRecord) -> Attribution | None:
-        if record.question_id is None or record.question_id in processed_ids:
-            return None
-        async with semaphore:
-            attribution = await _attribute_record(
-                record,
-                provider=provider,
-                model=model,
-                provider_client=provider_client,
-            )
+    async def run_record(index: int, record: EvalRecord, prompt_seen_tags: set[str]) -> tuple[int, Attribution]:
+        attribution = await _attribute_record(
+            record,
+            provider=provider,
+            model=model,
+            provider_client=provider_client,
+            seen_tags=prompt_seen_tags,
+        )
+        return index, attribution
+
+    records_to_process = [
+        (index, record)
+        for index, record in enumerate(records)
+        if record.question_id is not None and record.question_id not in processed_ids
+    ]
+    next_index = 0
+
+    def dispatch_next() -> None:
+        nonlocal next_index
+        if next_index >= len(records_to_process):
+            return
+        index, record = records_to_process[next_index]
+        next_index += 1
+        prompt_seen_tags = set(seen_tags)
+        active_tasks.add(asyncio.create_task(run_record(index, record, prompt_seen_tags)))
+
+    for _ in range(min(concurrency, len(records_to_process))):
+        dispatch_next()
+
+    while active_tasks:
+        done, active_tasks = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
+        completed = sorted(done, key=lambda task: task.result()[0])
+        for task in completed:
+            _, attribution = task.result()
             with output_path.open("a") as handle:
                 handle.write(attribution.model_dump_json() + "\n")
-            return attribution
-
-    pending = [run_record(record) for record in records]
-    for attribution in await asyncio.gather(*pending):
-        if attribution is not None:
+            seen_tags.update(attribution.error_tags)
             results.append(attribution)
+            dispatch_next()
 
     results.sort(key=lambda item: item.question_id)
     return results

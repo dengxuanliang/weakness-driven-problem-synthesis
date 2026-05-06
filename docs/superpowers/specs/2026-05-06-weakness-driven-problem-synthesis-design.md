@@ -155,9 +155,24 @@ Per-batch prompt contains:
     "output_format": "...",
     "constraints": ["1 <= len(events) <= 1e5", "..."],
     "edge_cases_hinted": ["empty input", "duplicate timestamps"],
-    "anti_homogeneity_notes": "differs from S00003: sliding window vs full bucketing"
+    "anti_homogeneity_notes": "differs from S00003: sliding window vs full bucketing",
+    "input_scale_class": "1e5-event-stream",
+    "data_shape_class": "nested-records",
+    "primary_pitfall": "ordering-stability",
+    "novelty_reason": "Focuses on stable online compaction rather than batch aggregation."
   }
   ```
+
+Additional structured diversity fields are part of the persisted problem schema:
+
+- `input_scale_class` — short label for scale profile, e.g. `1e5-sequence`,
+  `sparse-graph`, `event-stream`
+- `data_shape_class` — short label for dominant structure, e.g. `flat-array`,
+  `nested-records`, `tree`, `graph`
+- `primary_pitfall` — short label for the main failure mode the problem is
+  designed to trigger
+- `novelty_reason` — one-sentence explanation of why the problem is not
+  redundant with prior or same-batch items
 
 Ordering: weaknesses run **sequentially** (one weakness at a time). Inside a
 weakness, batches are also sequential so each new batch sees the running

@@ -74,11 +74,144 @@ async def test_synthesize_problems_respects_existing_batches_on_resume(tmp_path)
         completed=1,
         retry_count=0,
         dropped=0,
-        skipped=1,
+        skipped=0,
         extra_batches=0,
         completed_by_weakness={"W001": 1},
+        shortfall_by_weakness={"W001": 0},
     )
     assert len(client.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_skips_completed_batch_by_batch_identity(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    existing_records = []
+    for idx in range(10):
+        existing_records.append(
+            {
+                "id": f"S{idx:05d}",
+                "weakness_id": "W001",
+                "batch_index": 0,
+                "language": "python",
+                "difficulty": "hard",
+                "scenario": f"scenario-{idx}",
+                "problem_statement": "x" * 240,
+                "function_signature": f"def solve_{idx}(items: list[int]) -> int:",
+                "input_format": "list[int]",
+                "output_format": "int",
+                "constraints": ["1 <= n <= 1e5"],
+                "edge_cases_hinted": ["empty input"],
+                "anti_homogeneity_notes": "baseline",
+                "input_scale_class": f"scale-{idx}",
+                "data_shape_class": f"shape-{idx}",
+                "primary_pitfall": f"pitfall-{idx}",
+                "novelty_reason": "existing batch item",
+            }
+        )
+    output_path.write_text("\n".join(json.dumps(item) for item in existing_records) + "\n")
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S99999",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "next-batch-scenario",
+                    "problem_statement": "y" * 240,
+                    "function_signature": "def solve_next(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "new batch",
+                    "input_scale_class": "new-scale",
+                    "data_shape_class": "new-shape",
+                    "primary_pitfall": "new-pitfall",
+                    "novelty_reason": "continues after completed batch 0",
+                }
+            ]
+        ]
+    )
+
+    result = await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 11},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert result.skipped == 10
+    lines = [json.loads(line) for line in output_path.read_text().strip().splitlines()]
+    assert lines[-1]["batch_index"] == 1
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_does_not_treat_partial_batch_as_complete(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    existing_records = []
+    for idx in range(9):
+        existing_records.append(
+            {
+                "id": f"S{idx:05d}",
+                "weakness_id": "W001",
+                "batch_index": 0,
+                "language": "python",
+                "difficulty": "hard",
+                "scenario": f"scenario-{idx}",
+                "problem_statement": "x" * 240,
+                "function_signature": f"def solve_{idx}(items: list[int]) -> int:",
+                "input_format": "list[int]",
+                "output_format": "int",
+                "constraints": ["1 <= n <= 1e5"],
+                "edge_cases_hinted": ["empty input"],
+                "anti_homogeneity_notes": "baseline",
+                "input_scale_class": f"scale-{idx}",
+                "data_shape_class": f"shape-{idx}",
+                "primary_pitfall": f"pitfall-{idx}",
+                "novelty_reason": "partial batch item",
+            }
+        )
+    output_path.write_text("\n".join(json.dumps(item) for item in existing_records) + "\n")
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S99998",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "fills-partial-batch",
+                    "problem_statement": "z" * 240,
+                    "function_signature": "def solve_fill(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "fills batch 0",
+                    "input_scale_class": "fill-scale",
+                    "data_shape_class": "fill-shape",
+                    "primary_pitfall": "fill-pitfall",
+                    "novelty_reason": "completes the partial batch",
+                }
+            ]
+        ]
+    )
+
+    result = await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 10},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert result.skipped == 0
+    lines = [json.loads(line) for line in output_path.read_text().strip().splitlines()]
+    assert lines[-1]["batch_index"] == 0
 
 
 @pytest.mark.asyncio
@@ -328,6 +461,208 @@ async def test_synthesize_problems_drops_after_retry_budget_and_counts_extra_bat
     assert result.dropped == 1
     assert result.extra_batches == 1
     assert result.completed == 1
+    assert result.shortfall_by_weakness == {"W001": 0}
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_records_shortfall_when_refill_is_exhausted(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S10001",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad one",
+                    "problem_statement": "short",
+                    "function_signature": "def solve_bad_a(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+            [
+                {
+                    "id": "S10002",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad two",
+                    "problem_statement": "tiny",
+                    "function_signature": "def solve_bad_b(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+            [
+                {
+                    "id": "S10003",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad three",
+                    "problem_statement": "tiny",
+                    "function_signature": "def solve_bad_c(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+            [
+                {
+                    "id": "S10004",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad four",
+                    "problem_statement": "tiny",
+                    "function_signature": "def solve_bad_d(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+            [
+                {
+                    "id": "S10005",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad five",
+                    "problem_statement": "tiny",
+                    "function_signature": "def solve_bad_e(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+            [
+                {
+                    "id": "S10006",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad six",
+                    "problem_statement": "tiny",
+                    "function_signature": "def solve_bad_f(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+            [
+                {
+                    "id": "S10007",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad seven",
+                    "problem_statement": "tiny",
+                    "function_signature": "def solve_bad_g(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+            [
+                {
+                    "id": "S10008",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad eight",
+                    "problem_statement": "tiny",
+                    "function_signature": "def solve_bad_h(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+            [
+                {
+                    "id": "S10009",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "bad nine",
+                    "problem_statement": "tiny",
+                    "function_signature": "def solve_bad_i(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "bad",
+                    "input_scale_class": "1e5-sequence",
+                    "data_shape_class": "flat-array",
+                    "primary_pitfall": "off-by-one",
+                    "novelty_reason": "bad",
+                }
+            ],
+        ]
+    )
+
+    result = await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 1},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert result.completed == 0
+    assert result.shortfall_by_weakness == {"W001": 1}
 
 
 @pytest.mark.asyncio
