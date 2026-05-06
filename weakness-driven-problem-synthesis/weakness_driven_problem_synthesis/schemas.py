@@ -1,0 +1,38 @@
+"""Schema definitions for the synthesis pipeline."""
+
+from pydantic import BaseModel
+
+
+class EvalLabels(BaseModel):
+    category: str
+    programming_language: str
+    difficulty: str
+
+
+class EvalRecord(BaseModel):
+    question_id: int | None = None
+    content: str
+    canonical_solution: str
+    completion: str
+    test: str
+    labels: EvalLabels
+    pass_at_1: bool | int | float | None
+
+    @property
+    def is_failed(self) -> bool:
+        return self.pass_at_1 in (False, 0, 0.0, None)
+
+
+class SynthProblem(BaseModel):
+    id: str
+    weakness_id: str
+    language: str
+    difficulty: str
+    scenario: str
+    problem_statement: str
+    function_signature: str
+    input_format: str
+    output_format: str
+    constraints: list[str]
+    edge_cases_hinted: list[str]
+    anti_homogeneity_notes: str
