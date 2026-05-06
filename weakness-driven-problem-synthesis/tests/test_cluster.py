@@ -70,6 +70,38 @@ async def test_cluster_weaknesses_writes_resume_artifact(tmp_path):
     )
     assert reloaded == result
     assert len(client.calls) == 1
+    prompt = client.calls[0]["prompt"]
+    assert "Representative question summaries" in prompt
+    assert "recursion:base-case-missing" in prompt
+    assert "edge-case:empty-input" in prompt
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_deduplicates_tags_and_limits_representatives(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    attributions = [
+        make_attribution(1, ["recursion:base-case-missing"]),
+        make_attribution(2, ["recursion:base-case-missing"]),
+        make_attribution(3, ["recursion:base-case-missing"]),
+        make_attribution(4, ["recursion:base-case-missing"]),
+    ]
+    client = FakeProvider(
+        outputs=[
+            '[{"id":"W001","name":"Recursion termination","description":"recursion bugs","covered_tags":["recursion:base-case-missing"],"dominant_language":"python","dominant_category":"algorithms"}]'
+        ]
+    )
+
+    await cluster_weaknesses(
+        attributions,
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    prompt = client.calls[0]["prompt"]
+    assert prompt.count("recursion:base-case-missing") == 1
+    assert prompt.count("question_id") <= 3
 
 
 def test_map_questions_to_clusters_counts_multi_cluster_membership():

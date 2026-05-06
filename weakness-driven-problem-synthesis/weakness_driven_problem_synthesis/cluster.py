@@ -35,19 +35,25 @@ async def cluster_weaknesses(
         return WeaknessSet.model_validate_json(output_path.read_text())
 
     prompt_template = load_prompt("cluster.txt")
-    tag_summaries = []
+    tag_summaries: dict[str, list[dict[str, object]]] = {}
     for attribution in attributions:
         for tag in attribution.error_tags:
-            tag_summaries.append(
-                {
-                    "question_id": attribution.question_id,
-                    "tag": tag,
-                    "root_cause": attribution.root_cause,
-                    "ability_dimensions": attribution.ability_dimensions,
-                }
-            )
+            tag_summaries.setdefault(tag, [])
+            if len(tag_summaries[tag]) < 3:
+                tag_summaries[tag].append(
+                    {
+                        "question_id": attribution.question_id,
+                        "root_cause": attribution.root_cause,
+                        "ability_dimensions": attribution.ability_dimensions,
+                    }
+                )
+
+    prompt_sections = ["Representative question summaries:"]
+    for tag, representatives in tag_summaries.items():
+        prompt_sections.append(f"- {tag}: {representatives}")
+
     payload = await complete_json(
-        f"{prompt_template}\n\nTag evidence:\n{tag_summaries}",
+        f"{prompt_template}\n\n" + "\n".join(prompt_sections),
         {"type": "array"},
         provider=provider,
         model=model,

@@ -29,6 +29,13 @@ def _load_existing_problems(output_path: Path) -> list[dict]:
     return results
 
 
+def _prior_summary(problems: list[dict]) -> str:
+    if not problems:
+        return "Prior problems summary: none"
+    items = [f"{problem['id']}: {problem['scenario']}" for problem in problems]
+    return "Prior problems summary: " + "; ".join(items)
+
+
 async def synthesize_for_weaknesses(
     weakness_set: WeaknessSet,
     *,
@@ -66,6 +73,7 @@ async def synthesize_for_weaknesses(
         while current < target:
             batch_size = min(BASE_BATCH_SIZE, target - current)
             prompt_template = load_prompt("synthesize.txt")
+            prior_summary = _prior_summary(existing_by_weakness.get(weakness.id, []))
             payload = await complete_json(
                 (
                     f"{prompt_template}\n\n"
@@ -74,6 +82,7 @@ async def synthesize_for_weaknesses(
                     f"Description: {weakness.description}\n"
                     f"Language: {weakness.dominant_language}\n"
                     f"Batch size: {batch_size}\n"
+                    f"{prior_summary}\n"
                 ),
                 {"type": "array"},
                 provider=provider,
@@ -130,6 +139,7 @@ async def synthesize_for_weaknesses(
                             f"Description: {weakness.description}\n"
                             f"Language: {weakness.dominant_language}\n"
                             f"Batch size: 1\n"
+                            f"{prior_summary}\n"
                         ),
                         {"type": "array"},
                         provider=provider,

@@ -292,3 +292,126 @@ async def test_synthesize_problems_drops_after_retry_budget_and_counts_extra_bat
     assert result.dropped == 1
     assert result.extra_batches == 1
     assert result.completed == 1
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_includes_prior_summary_in_following_batch_prompt(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S00001",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "scenario one",
+                    "problem_statement": "a" * 240,
+                    "function_signature": "def solve_a(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "one",
+                }
+            ],
+            [
+                {
+                    "id": "S00002",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "scenario two",
+                    "problem_statement": "b" * 240,
+                    "function_signature": "def solve_b(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["duplicate timestamps"],
+                    "anti_homogeneity_notes": "two",
+                }
+            ],
+        ]
+    )
+
+    await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 2},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert "Prior problems summary" in client.calls[1]["prompt"]
+    assert "scenario one" in client.calls[1]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_retries_high_jaccard_similarity(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    existing = {
+        "id": "S00000",
+        "weakness_id": "W001",
+        "batch_index": 0,
+        "language": "python",
+        "difficulty": "hard",
+        "scenario": "existing scenario",
+        "problem_statement": "alpha beta gamma delta epsilon zeta eta theta",
+        "function_signature": "def solve_existing(items: list[int]) -> int:",
+        "input_format": "list[int]",
+        "output_format": "int",
+        "constraints": ["1 <= n <= 1e5"],
+        "edge_cases_hinted": ["empty input"],
+        "anti_homogeneity_notes": "baseline",
+    }
+    output_path.write_text(json.dumps(existing) + "\n")
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S00001",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "new scenario",
+                    "problem_statement": "alpha beta gamma delta epsilon zeta eta lambda",
+                    "function_signature": "def solve_new(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "similar",
+                }
+            ],
+            [
+                {
+                    "id": "S00002",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "fresh scenario",
+                    "problem_statement": "c" * 240,
+                    "function_signature": "def solve_fresh(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "fresh",
+                }
+            ],
+        ]
+    )
+
+    result = await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 2},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert result.retry_count >= 1
+    lines = [json.loads(line) for line in output_path.read_text().strip().splitlines()]
+    assert lines[-1]["id"] == "S00002"
