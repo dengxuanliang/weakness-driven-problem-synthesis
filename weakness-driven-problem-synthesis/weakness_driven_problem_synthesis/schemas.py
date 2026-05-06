@@ -65,3 +65,6 @@ class SynthesisSummary(BaseModel):
     completed: int
     retry_count: int
     dropped: int = 0
+    skipped: int = 0
+    extra_batches: int = 0
+    completed_by_weakness: dict[str, int] = {}

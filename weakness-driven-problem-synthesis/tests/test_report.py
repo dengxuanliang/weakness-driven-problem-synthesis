@@ -17,7 +17,14 @@ def test_write_report_includes_counts_and_sampled_problem(tmp_path):
         ],
         evidence_question_ids={"W001": [1, 2]},
     )
-    synthesis_summary = SynthesisSummary(completed=3, retry_count=1, dropped=0)
+    synthesis_summary = SynthesisSummary(
+        completed=3,
+        retry_count=1,
+        dropped=0,
+        skipped=2,
+        extra_batches=1,
+        completed_by_weakness={"W001": 3},
+    )
 
     write_report(
         report_path=report_path,
@@ -31,3 +38,8 @@ def test_write_report_includes_counts_and_sampled_problem(tmp_path):
     assert "Overall counts" in text
     assert "W001" in text
     assert "Solve a deeply nested recursion problem" in text
+    assert "Retries: 1" in text
+    assert "Skipped: 2" in text
+    assert "Extra batches: 1" in text
+    assert "Evidence count" in text
+    assert "Completed: 3" in text

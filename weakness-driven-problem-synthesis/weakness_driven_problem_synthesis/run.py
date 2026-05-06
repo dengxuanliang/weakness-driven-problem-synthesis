@@ -16,6 +16,13 @@ from weakness_driven_problem_synthesis.report import write_report
 from weakness_driven_problem_synthesis.schemas import SynthesisSummary
 from weakness_driven_problem_synthesis.synthesize import synthesize_for_weaknesses
 
+STAGE_ARTIFACTS = (
+    "error_attributions.jsonl",
+    "weaknesses.json",
+    "synthesized_problems.jsonl",
+    "report.md",
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -30,17 +37,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def prepare_output_dir(output_dir: Path, *, restart: bool) -> Path:
+def prepare_output_dir(output_dir: Path, *, restart: bool, resume: bool = True) -> Path:
     if restart and output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if not resume:
+        for artifact_name in STAGE_ARTIFACTS:
+            artifact_path = output_dir / artifact_name
+            if artifact_path.exists():
+                artifact_path.unlink()
     return output_dir
+
+
+def estimate_call_counts(*, failed_count: int, total_questions: int, batch_size: int = 10) -> dict[str, int]:
+    return {
+        "attribution_calls": failed_count,
+        "synthesis_batches": (total_questions + batch_size - 1) // batch_size,
+    }
 
 
 async def main_with_args(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
-    output_dir = prepare_output_dir(Path(args.output_dir), restart=args.restart)
+    output_dir = prepare_output_dir(Path(args.output_dir), restart=args.restart, resume=args.resume)
     failed_records = list(load_failed_records(Path(args.eval_log)))
+    estimates = estimate_call_counts(failed_count=len(failed_records), total_questions=args.total_questions)
+    print(
+        "Pre-flight estimate: "
+        f"{estimates['attribution_calls']} attribution calls, "
+        f"{estimates['synthesis_batches']} synthesis batches"
+    )
 
     error_attributions = await attribute_failures(
         failed_records,

@@ -24,6 +24,8 @@ def write_report(
         f"- Synthesized problems: {synthesis_summary.completed}",
         f"- Dropped: {synthesis_summary.dropped}",
         f"- Retries: {synthesis_summary.retry_count}",
+        f"- Skipped: {synthesis_summary.skipped}",
+        f"- Extra batches: {synthesis_summary.extra_batches}",
         "",
         "## Weaknesses",
     ]
@@ -34,6 +36,7 @@ def write_report(
             [
                 f"### {weakness.id} {weakness.name}",
                 f"- Evidence count: {evidence_count}",
+                f"- Completed: {synthesis_summary.completed_by_weakness.get(weakness.id, 0)}",
                 f"- Sample: {sampled_problems.get(weakness.id, '')}",
                 "",
             ]

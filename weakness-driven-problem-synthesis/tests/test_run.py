@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from weakness_driven_problem_synthesis.run import build_parser, main_with_args, prepare_output_dir
+from weakness_driven_problem_synthesis.run import (
+    build_parser,
+    estimate_call_counts,
+    main_with_args,
+    prepare_output_dir,
+)
 from weakness_driven_problem_synthesis.schemas import Attribution, SynthesisSummary, Weakness, WeaknessSet
 
 
@@ -31,6 +36,33 @@ def test_restart_deletes_stage_artifacts(tmp_path):
     prepare_output_dir(output_dir, restart=True)
 
     assert not artifact.exists()
+
+
+def test_prepare_output_dir_clears_stage_artifacts_when_resume_disabled(tmp_path):
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    for name in [
+        "error_attributions.jsonl",
+        "weaknesses.json",
+        "synthesized_problems.jsonl",
+        "report.md",
+        "keep.txt",
+    ]:
+        (output_dir / name).write_text("x")
+
+    prepare_output_dir(output_dir, restart=False, resume=False)
+
+    assert not (output_dir / "error_attributions.jsonl").exists()
+    assert not (output_dir / "weaknesses.json").exists()
+    assert not (output_dir / "synthesized_problems.jsonl").exists()
+    assert not (output_dir / "report.md").exists()
+    assert (output_dir / "keep.txt").exists()
+
+
+def test_estimate_call_counts_uses_failed_count_and_batch_size():
+    estimates = estimate_call_counts(failed_count=23, total_questions=27, batch_size=10)
+    assert estimates["attribution_calls"] == 23
+    assert estimates["synthesis_batches"] == 3
 
 
 @pytest.mark.asyncio
