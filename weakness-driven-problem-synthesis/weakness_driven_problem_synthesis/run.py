@@ -15,12 +15,14 @@ from weakness_driven_problem_synthesis.cluster import cluster_weaknesses
 from weakness_driven_problem_synthesis.load_filter import load_failed_records
 from weakness_driven_problem_synthesis.report import write_report
 from weakness_driven_problem_synthesis.schemas import SynthesisSummary
+from weakness_driven_problem_synthesis.solver_view import write_solver_view
 from weakness_driven_problem_synthesis.synthesize import synthesize_for_weaknesses
 
 STAGE_ARTIFACTS = (
     "error_attributions.jsonl",
     "weaknesses.json",
     "synthesized_problems.jsonl",
+    "solver_view.jsonl",
     "report.md",
 )
 
@@ -108,6 +110,10 @@ async def main_with_args(argv: list[str]) -> int:
     sampled = {}
     synth_path = output_dir / "synthesized_problems.jsonl"
     if synth_path.exists():
+        write_solver_view(
+            synthesized_path=synth_path,
+            solver_view_path=output_dir / "solver_view.jsonl",
+        )
         with synth_path.open() as handle:
             for raw_line in handle:
                 if raw_line.strip():

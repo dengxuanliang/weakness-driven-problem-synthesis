@@ -48,6 +48,7 @@ def test_prepare_output_dir_clears_stage_artifacts_when_resume_disabled(tmp_path
         "error_attributions.jsonl",
         "weaknesses.json",
         "synthesized_problems.jsonl",
+        "solver_view.jsonl",
         "report.md",
         "keep.txt",
     ]:
@@ -58,6 +59,7 @@ def test_prepare_output_dir_clears_stage_artifacts_when_resume_disabled(tmp_path
     assert not (output_dir / "error_attributions.jsonl").exists()
     assert not (output_dir / "weaknesses.json").exists()
     assert not (output_dir / "synthesized_problems.jsonl").exists()
+    assert not (output_dir / "solver_view.jsonl").exists()
     assert not (output_dir / "report.md").exists()
     assert (output_dir / "keep.txt").exists()
 
@@ -126,7 +128,7 @@ async def test_pipeline_runs_end_to_end_with_stubbed_llm(tmp_path, monkeypatch):
         output_path.write_text(
             '{"id":"S00001","weakness_id":"W001","batch_index":0,"language":"python","difficulty":"hard","scenario":"demo","problem_statement":"'
             + ("x" * 240)
-            + '","function_signature":"def solve(x: list[int]) -> int:","input_format":"list[int]","output_format":"int","constraints":["1 <= n <= 1e5"],"edge_cases_hinted":["empty input"],"anti_homogeneity_notes":"demo"}\n'
+            + '","function_signature":"def solve(x: list[int]) -> int:","input_format":"list[int]","output_format":"int","constraints":["1 <= n <= 1e5"],"edge_cases_hinted":["empty input"],"anti_homogeneity_notes":"demo","input_scale_class":"scale-a","data_shape_class":"shape-a","primary_pitfall":"pitfall-a","novelty_reason":"novelty-a"}\n'
         )
         return SynthesisSummary(completed=1, retry_count=0, dropped=0)
 
@@ -152,6 +154,10 @@ async def test_pipeline_runs_end_to_end_with_stubbed_llm(tmp_path, monkeypatch):
 
     assert exit_code == 0
     assert (tmp_path / "out" / "report.md").exists()
+    assert (tmp_path / "out" / "solver_view.jsonl").exists()
+    solver_view = (tmp_path / "out" / "solver_view.jsonl").read_text()
+    assert '"edge_cases_hinted"' not in solver_view
+    assert '"solver_prompt"' in solver_view
 
 
 @pytest.mark.asyncio
