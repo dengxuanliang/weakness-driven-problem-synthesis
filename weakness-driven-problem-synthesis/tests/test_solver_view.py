@@ -47,6 +47,19 @@ def test_write_solver_view_exports_only_solver_fields_and_prompt(tmp_path):
         "constraints",
         "solver_prompt",
     }
+    assert record["solver_prompt"] == (
+        "Solve this problem in python.\n\n"
+        "Solve a batch processing problem.\n\n"
+        "Function signature:\n"
+        "def solve(items: list[int]) -> int:\n\n"
+        "Input:\n"
+        "A list of integers.\n\n"
+        "Output:\n"
+        "An integer result.\n\n"
+        "Constraints:\n"
+        "- 1 <= n <= 1e5\n"
+        "- values fit in 64-bit signed integers\n\n"
+        "Return only code."
+    )
     assert "Edge cases" not in record["solver_prompt"]
     assert "Return only code." in record["solver_prompt"]
-    assert "Solve the following programming problem in python." in record["solver_prompt"]
