@@ -13,6 +13,10 @@ Requirements:
 - Use the recent generated problems list to avoid local repetition.
 - Use the coverage memory counts to avoid overusing already-common scale, shape, and pitfall patterns.
 
+Content safety:
+- Do not mention any weakness, pitfall, internal objective, or that the problem is designed to test a specific mistake or reasoning pattern.
+- Keep all meta rationale only in `anti_homogeneity_notes`, `primary_pitfall`, and `novelty_reason`, never in solver-facing fields.
+
 Batch diversity:
 Each item in this batch must differ from the others by:
 - scenario
