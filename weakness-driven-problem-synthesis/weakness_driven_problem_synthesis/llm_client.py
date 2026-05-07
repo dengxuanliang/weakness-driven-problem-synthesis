@@ -179,6 +179,7 @@ async def complete_json(
     client = provider_client or build_provider_client(provider=provider, model=model)
     resolved_model = model or getattr(client, "model", DEFAULT_MODELS[provider])
     repair_prompt = prompt
+    last_raw_output: Any | None = None
 
     for attempt in range(3):
         raw_output = await _complete_with_backoff(
@@ -189,6 +190,7 @@ async def complete_json(
             max_tokens=max_tokens,
             model=resolved_model,
         )
+        last_raw_output = raw_output
         if isinstance(raw_output, (dict, list)):
             return raw_output
         try:
@@ -201,7 +203,11 @@ async def complete_json(
                 f"Repair it to valid JSON only:\n{raw_output}"
             )
 
-    raise ValueError("Model did not return valid JSON after 3 attempts")
+    _maybe_write_invalid_json_debug_dump(last_raw_output)
+    raise ValueError(
+        "Model did not return valid JSON after 3 attempts. "
+        f"Last output preview: {_preview_text(last_raw_output)}"
+    )
 
 
 async def _complete_with_backoff(
@@ -239,3 +245,19 @@ def _looks_retryable(error: Exception) -> bool:
     message = str(error).lower()
     retry_markers = ("rate limit", "429", "500", "502", "503", "504", "timeout", "temporarily unavailable")
     return any(marker in message for marker in retry_markers)
+
+
+def _preview_text(value: Any, *, limit: int = 300) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
+def _maybe_write_invalid_json_debug_dump(value: Any) -> None:
+    debug_path = os.getenv("WEAKNESS_SYNTH_DEBUG_PATH")
+    if not debug_path:
+        return
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
+    with open(debug_path, "w") as handle:
+        handle.write(text)

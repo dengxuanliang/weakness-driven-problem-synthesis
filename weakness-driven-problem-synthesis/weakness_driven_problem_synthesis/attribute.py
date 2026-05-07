@@ -11,6 +11,22 @@ from weakness_driven_problem_synthesis.prompts import load_prompt, load_referenc
 from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord
 
 
+def _build_progress_bar(*, total: int, initial: int, desc: str, unit: str) -> Any:
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        return _NullProgressBar()
+    return tqdm(total=total, initial=initial, desc=desc, unit=unit)
+
+
+class _NullProgressBar:
+    def update(self, value: int) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 def _load_existing_attributions(output_path: Path) -> list[Attribution]:
     if not output_path.exists():
         return []
@@ -69,6 +85,12 @@ async def attribute_failures(
     results = list(existing)
     seen_tags = {tag for item in existing for tag in item.error_tags}
     active_tasks: set[asyncio.Task[tuple[int, Attribution]]] = set()
+    progress = _build_progress_bar(
+        total=len(records),
+        initial=len(existing),
+        desc="Attribution",
+        unit="record",
+    )
 
     async def run_record(index: int, record: EvalRecord, prompt_seen_tags: set[str]) -> tuple[int, Attribution]:
         attribution = await _attribute_record(
@@ -96,25 +118,29 @@ async def attribute_failures(
         prompt_seen_tags = set(seen_tags)
         active_tasks.add(asyncio.create_task(run_record(index, record, prompt_seen_tags)))
 
-    for _ in range(min(concurrency, len(records_to_process))):
-        dispatch_next()
-
-    while active_tasks:
-        done, active_tasks = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
-        completed = sorted(done, key=lambda task: task.result()[0])
-        round_attributions: list[Attribution] = []
-        for task in completed:
-            _, attribution = task.result()
-            with output_path.open("a") as handle:
-                handle.write(attribution.model_dump_json() + "\n")
-            round_attributions.append(attribution)
-            results.append(attribution)
-
-        for attribution in round_attributions:
-            seen_tags.update(attribution.error_tags)
-
-        for _ in range(len(completed)):
+    try:
+        for _ in range(min(concurrency, len(records_to_process))):
             dispatch_next()
 
-    results.sort(key=lambda item: item.question_id)
-    return results
+        while active_tasks:
+            done, active_tasks = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
+            completed = sorted(done, key=lambda task: task.result()[0])
+            round_attributions: list[Attribution] = []
+            for task in completed:
+                _, attribution = task.result()
+                with output_path.open("a") as handle:
+                    handle.write(attribution.model_dump_json() + "\n")
+                round_attributions.append(attribution)
+                results.append(attribution)
+                progress.update(1)
+
+            for attribution in round_attributions:
+                seen_tags.update(attribution.error_tags)
+
+            for _ in range(len(completed)):
+                dispatch_next()
+
+        results.sort(key=lambda item: item.question_id)
+        return results
+    finally:
+        progress.close()

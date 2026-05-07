@@ -28,6 +28,33 @@ class FakeProvider:
         return self.outputs.pop(0)
 
 
+class RecordingProgressBar:
+    def __init__(self, total=None, initial=0, desc=None, unit=None):
+        self.total = total
+        self.initial = initial
+        self.desc = desc
+        self.unit = unit
+        self.updates = []
+        self.closed = False
+
+    def update(self, value):
+        self.updates.append(value)
+
+    def close(self):
+        self.closed = True
+
+
+def make_progress_factory():
+    holder = {}
+
+    def factory(**kwargs):
+        progress = RecordingProgressBar(**kwargs)
+        holder["progress"] = progress
+        return progress
+
+    return holder, factory
+
+
 def make_weakness_set() -> WeaknessSet:
     return WeaknessSet(
         weaknesses=[
@@ -84,6 +111,116 @@ async def test_synthesize_problems_respects_existing_batches_on_resume(tmp_path)
         shortfall_by_weakness={"W001": 0},
     )
     assert len(client.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_updates_progress_for_each_accepted_problem(tmp_path, monkeypatch):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S00001",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "scenario one",
+                    "problem_statement": "a" * 240,
+                    "function_signature": "def solve_a(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "one",
+                    "input_scale_class": "scale-a",
+                    "data_shape_class": "shape-a",
+                    "primary_pitfall": "pitfall-a",
+                    "novelty_reason": "novelty-a",
+                },
+                {
+                    "id": "S00002",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "scenario two",
+                    "problem_statement": "b" * 240,
+                    "function_signature": "def solve_b(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["duplicate timestamps"],
+                    "anti_homogeneity_notes": "two",
+                    "input_scale_class": "scale-b",
+                    "data_shape_class": "shape-b",
+                    "primary_pitfall": "pitfall-b",
+                    "novelty_reason": "novelty-b",
+                },
+            ]
+        ]
+    )
+    holder, factory = make_progress_factory()
+    monkeypatch.setattr("weakness_driven_problem_synthesis.synthesize._build_progress_bar", factory)
+
+    await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 2},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    progress = holder["progress"]
+    assert progress.total == 2
+    assert progress.initial == 0
+    assert progress.updates == [1, 1]
+    assert progress.closed is True
+
+
+@pytest.mark.asyncio
+async def test_synthesize_progress_initializes_from_existing_records(tmp_path, monkeypatch):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    output_path.write_text(
+        json.dumps(
+            {
+                "id": "S00001",
+                "weakness_id": "W001",
+                "batch_index": 0,
+                "language": "python",
+                "difficulty": "hard",
+                "scenario": "existing scenario",
+                "problem_statement": "x" * 240,
+                "function_signature": "def solve_existing(items: list[int]) -> int:",
+                "input_format": "list[int]",
+                "output_format": "int",
+                "constraints": ["1 <= n <= 1e5"],
+                "edge_cases_hinted": ["empty input"],
+                "anti_homogeneity_notes": "baseline",
+                "input_scale_class": "scale-existing",
+                "data_shape_class": "shape-existing",
+                "primary_pitfall": "pitfall-existing",
+                "novelty_reason": "novelty-existing",
+            }
+        )
+        + "\n"
+    )
+    client = FakeProvider(outputs=[])
+    holder, factory = make_progress_factory()
+    monkeypatch.setattr("weakness_driven_problem_synthesis.synthesize._build_progress_bar", factory)
+
+    await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 1},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    progress = holder["progress"]
+    assert progress.total == 1
+    assert progress.initial == 1
+    assert progress.updates == []
 
 
 @pytest.mark.asyncio

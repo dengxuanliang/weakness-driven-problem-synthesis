@@ -130,6 +130,33 @@ class FakeOpenAIClient:
         self.chat = type("ChatNamespace", (), {"completions": FakeOpenAIChatCompletions(content)})()
 
 
+class RecordingProgressBar:
+    def __init__(self, total=None, initial=0, desc=None, unit=None):
+        self.total = total
+        self.initial = initial
+        self.desc = desc
+        self.unit = unit
+        self.updates = []
+        self.closed = False
+
+    def update(self, value):
+        self.updates.append(value)
+
+    def close(self):
+        self.closed = True
+
+
+def make_progress_factory():
+    holder = {}
+
+    def factory(**kwargs):
+        progress = RecordingProgressBar(**kwargs)
+        holder["progress"] = progress
+        return progress
+
+    return holder, factory
+
+
 @pytest.mark.asyncio
 async def test_complete_json_retries_invalid_json():
     client = FakeProvider(outputs=["not json", '{"ok": true}'])
@@ -141,6 +168,19 @@ async def test_complete_json_retries_invalid_json():
     )
     assert result == {"ok": True}
     assert len(client.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_complete_json_includes_last_raw_output_preview_when_retries_exhausted():
+    client = FakeProvider(outputs=["not json", "still not json", "final not json"])
+
+    with pytest.raises(ValueError, match=r"final not json"):
+        await complete_json(
+            "prompt",
+            {"type": "object"},
+            provider_client=client,
+            model="test-model",
+        )
 
 
 def test_missing_api_key_fails_fast(monkeypatch):
@@ -267,6 +307,63 @@ async def test_attribute_failures_appends_one_json_line_per_record(tmp_path):
     lines = output_path.read_text().strip().splitlines()
     assert len(lines) == 2
     assert [item.question_id for item in result] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_attribute_failures_updates_progress_for_new_records(tmp_path, monkeypatch):
+    output_path = tmp_path / "error_attributions.jsonl"
+    client = FakeProvider(
+        outputs=[
+            '{"question_id": 1, "is_truly_failed": true, "error_tags": ["tag:1"], "root_cause": "r1", "ability_dimensions": ["a1"], "evidence_snippet": "e1"}',
+            '{"question_id": 2, "is_truly_failed": true, "error_tags": ["tag:2"], "root_cause": "r2", "ability_dimensions": ["a2"], "evidence_snippet": "e2"}',
+        ]
+    )
+    holder, factory = make_progress_factory()
+    monkeypatch.setattr("weakness_driven_problem_synthesis.attribute._build_progress_bar", factory)
+
+    await attribute_failures(
+        [make_eval_record(1, "first"), make_eval_record(2, "second")],
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        concurrency=2,
+        provider_client=client,
+    )
+
+    progress = holder["progress"]
+    assert progress.total == 2
+    assert progress.initial == 0
+    assert progress.updates == [1, 1]
+    assert progress.closed is True
+
+
+@pytest.mark.asyncio
+async def test_attribute_failures_progress_initializes_from_existing_records(tmp_path, monkeypatch):
+    output_path = tmp_path / "error_attributions.jsonl"
+    output_path.write_text(
+        '{"question_id": 7, "is_truly_failed": true, "error_tags": ["x:y"], "root_cause": "r", "ability_dimensions": ["a"], "evidence_snippet": "e"}\n'
+    )
+    client = FakeProvider(
+        outputs=[
+            '{"question_id": 8, "is_truly_failed": true, "error_tags": ["tag:8"], "root_cause": "r8", "ability_dimensions": ["a8"], "evidence_snippet": "e8"}',
+        ]
+    )
+    holder, factory = make_progress_factory()
+    monkeypatch.setattr("weakness_driven_problem_synthesis.attribute._build_progress_bar", factory)
+
+    await attribute_failures(
+        [make_eval_record(7, "skip me"), make_eval_record(8, "process me")],
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        concurrency=1,
+        provider_client=client,
+    )
+
+    progress = holder["progress"]
+    assert progress.total == 2
+    assert progress.initial == 1
+    assert progress.updates == [1]
 
 
 @pytest.mark.asyncio
