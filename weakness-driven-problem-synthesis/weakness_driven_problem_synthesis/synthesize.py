@@ -71,6 +71,22 @@ def _coverage_summary(problems: list[dict], *, max_buckets: int = MAX_COVERAGE_B
     return "\n".join(lines)
 
 
+def _expect_array_payload(payload: Any, *, stage: str) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return payload
+    preview = repr(payload)
+    if len(preview) > 200:
+        preview = preview[:200] + "..."
+    raise ValueError(f"{stage} expected JSON array payload, got {type(payload).__name__}: {preview}")
+
+
+def _expect_non_empty_array_payload(payload: Any, *, stage: str) -> list[dict[str, Any]]:
+    items = _expect_array_payload(payload, stage=stage)
+    if not items:
+        raise ValueError(f"{stage} expected non-empty JSON array payload, got empty list")
+    return items
+
+
 def _build_synthesis_prompt(
     *,
     prompt_template: str,
@@ -150,7 +166,8 @@ async def synthesize_for_weaknesses(
                 provider_client=provider_client,
             )
 
-            candidates = [SynthProblem.model_validate(item) for item in payload]
+            candidate_payload = _expect_non_empty_array_payload(payload, stage="synthesize_for_weaknesses")
+            candidates = [SynthProblem.model_validate(item) for item in candidate_payload]
             slot_index = 0
             while slot_index < batch_size:
                 if slot_index >= len(candidates):
@@ -206,7 +223,11 @@ async def synthesize_for_weaknesses(
                         model=model,
                         provider_client=provider_client,
                     )
-                    candidate = SynthProblem.model_validate(refill_payload[0])
+                    refill_candidates = _expect_non_empty_array_payload(
+                        refill_payload,
+                        stage="synthesize_for_weaknesses",
+                    )
+                    candidate = SynthProblem.model_validate(refill_candidates[0])
 
             if current >= target:
                 break

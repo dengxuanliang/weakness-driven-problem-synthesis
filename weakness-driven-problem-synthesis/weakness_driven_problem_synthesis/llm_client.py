@@ -14,6 +14,9 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o",
 }
 
+OPENAI_JSON_OBJECT_MODE = "json_object"
+OPENAI_PLAIN_TEXT_ARRAY_MODE = "plain_text_array"
+
 
 @dataclass
 class ProviderClient:
@@ -45,17 +48,18 @@ class OpenAIProviderClient(ProviderClient):
         max_tokens: int,
         model: str,
     ) -> str:
+        completion_mode = _openai_completion_mode(schema)
         effective_system = system
         request_kwargs: dict[str, Any] = {}
-        if schema.get("type") == "array":
-            array_instruction = (
-                "Return valid JSON only. "
-                "The top-level value must be a JSON array. "
-                "The first character must be '[' and the last character must be ']'."
-            )
-            effective_system = array_instruction if system is None else f"{system}\n\n{array_instruction}"
-        else:
+
+        # Some OpenAI-compatible gateways reliably support structured JSON mode only
+        # for object-root outputs. Array-root outputs stay in plain-text JSON mode and
+        # are parsed locally after completion.
+        if completion_mode == OPENAI_JSON_OBJECT_MODE:
             request_kwargs["response_format"] = {"type": "json_object"}
+        else:
+            array_instruction = _openai_array_instruction()
+            effective_system = array_instruction if system is None else f"{system}\n\n{array_instruction}"
 
         response = await self.client.chat.completions.create(
             model=model,
@@ -94,6 +98,18 @@ class AnthropicProviderClient(ProviderClient):
         if not text_blocks:
             raise ValueError("Anthropic response did not contain any text blocks")
         return "".join(text_blocks)
+
+
+def _openai_completion_mode(schema: dict[str, Any]) -> str:
+    return OPENAI_PLAIN_TEXT_ARRAY_MODE if schema.get("type") == "array" else OPENAI_JSON_OBJECT_MODE
+
+
+def _openai_array_instruction() -> str:
+    return (
+        "Return valid JSON only. "
+        "The top-level value must be a JSON array. "
+        "The first character must be '[' and the last character must be ']'."
+    )
 
 
 def _build_openai_messages(*, prompt: str, system: str | None) -> list[dict[str, Any]]:

@@ -1,5 +1,6 @@
 """Schema definitions for the synthesis pipeline."""
 
+import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,6 +25,10 @@ class EvalRecord(BaseModel):
     @property
     def is_failed(self) -> bool:
         return self.pass_at_1 in (False, 0, 0.0, None)
+
+    @property
+    def test_text(self) -> str:
+        return self.test if isinstance(self.test, str) else json.dumps(self.test, ensure_ascii=False)
 
 
 class SynthProblem(BaseModel):

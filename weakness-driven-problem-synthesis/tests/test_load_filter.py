@@ -31,6 +31,7 @@ def test_eval_record_maps_real_log_id_to_question_id():
     )
 
     assert record.question_id == 229
+    assert record.test_text == '{"code": "assert True"}'
 
 
 def test_load_failed_records_accepts_real_log_shape_with_id_field(tmp_path):
@@ -43,3 +44,23 @@ def test_load_failed_records_accepts_real_log_shape_with_id_field(tmp_path):
 
     assert len(records) == 1
     assert records[0].question_id == 229
+
+
+def test_eval_record_test_text_returns_plain_string_when_test_is_string():
+    record = EvalRecord.model_validate(
+        {
+            "question_id": 7,
+            "content": "problem",
+            "canonical_solution": "x",
+            "completion": "y",
+            "test": "assert value == 1",
+            "labels": {
+                "category": "c",
+                "programming_language": "python",
+                "difficulty": "hard",
+            },
+            "pass_at_1": 0,
+        }
+    )
+
+    assert record.test_text == "assert value == 1"

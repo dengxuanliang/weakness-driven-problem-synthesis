@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +34,6 @@ async def _attribute_record(
     vocabulary = load_reference("error_tag_vocabulary.md")
     prompt_template = load_prompt("attribute.txt")
     seen_tags_section = ", ".join(sorted(seen_tags)) if seen_tags else "none"
-    test_section = record.test if isinstance(record.test, str) else json.dumps(record.test, ensure_ascii=False)
     prompt = (
         f"{prompt_template}\n\n"
         f"Vocabulary:\n{vocabulary}\n\n"
@@ -45,7 +43,7 @@ async def _attribute_record(
         f"Canonical solution:\n{record.canonical_solution}\n\n"
         f"Completion:\n{record.completion}\n\n"
         f"Labels: category={record.labels.category}, language={record.labels.programming_language}, difficulty={record.labels.difficulty}\n"
-        f"Test:\n{test_section}\n"
+        f"Test:\n{record.test_text}\n"
     )
     payload = await complete_json(
         prompt,

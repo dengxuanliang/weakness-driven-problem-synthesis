@@ -10,6 +10,33 @@ from weakness_driven_problem_synthesis.prompts import load_prompt
 from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord, Weakness, WeaknessSet
 
 
+def _expect_array_payload(payload: Any, *, stage: str) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return payload
+    preview = repr(payload)
+    if len(preview) > 200:
+        preview = preview[:200] + "..."
+    raise ValueError(f"{stage} expected JSON array payload, got {type(payload).__name__}: {preview}")
+
+
+def _expect_array_payload_with_min_items(payload: Any, *, stage: str, min_items: int) -> list[dict[str, Any]]:
+    items = _expect_array_payload(payload, stage=stage)
+    if len(items) < min_items:
+        if min_items == 1:
+            raise ValueError(f"{stage} expected non-empty JSON array payload, got empty list")
+        raise ValueError(f"{stage} expected at least {min_items} JSON array items, got {len(items)}")
+    return items
+
+
+def _validate_weakness_set(weakness_set: WeaknessSet, *, attributions: list[Attribution]) -> WeaknessSet:
+    _expect_array_payload_with_min_items(
+        [item.model_dump() for item in weakness_set.weaknesses],
+        stage="cluster_weaknesses",
+        min_items=1 if attributions else 0,
+    )
+    return weakness_set
+
+
 def map_questions_to_clusters(
     attributions: list[Attribution],
     weaknesses: list[Weakness],
@@ -33,7 +60,8 @@ async def cluster_weaknesses(
     provider_client: Any | None = None,
 ) -> WeaknessSet:
     if output_path.exists():
-        return WeaknessSet.model_validate_json(output_path.read_text())
+        weakness_set = WeaknessSet.model_validate_json(output_path.read_text())
+        return _validate_weakness_set(weakness_set, attributions=attributions)
 
     prompt_template = load_prompt("cluster.txt")
     records_by_id = {record.question_id: record for record in eval_records if record.question_id is not None}
@@ -70,10 +98,17 @@ async def cluster_weaknesses(
         model=model,
         provider_client=provider_client,
     )
-    weaknesses = [Weakness.model_validate(item) for item in payload]
+    min_items = 1 if attributions else 0
+    weaknesses_payload = _expect_array_payload_with_min_items(
+        payload,
+        stage="cluster_weaknesses",
+        min_items=min_items,
+    )
+    weaknesses = [Weakness.model_validate(item) for item in weaknesses_payload]
     weakness_set = WeaknessSet(
         weaknesses=weaknesses,
         evidence_question_ids=map_questions_to_clusters(attributions, weaknesses),
     )
+    _validate_weakness_set(weakness_set, attributions=attributions)
     output_path.write_text(weakness_set.model_dump_json(indent=2))
     return weakness_set

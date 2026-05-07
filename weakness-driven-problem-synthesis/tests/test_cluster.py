@@ -138,6 +138,95 @@ async def test_cluster_weaknesses_deduplicates_tags_and_limits_representatives(t
     assert prompt.count("'id':") <= 3
 
 
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_rejects_non_array_payload_with_clear_error(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    client = FakeProvider(
+        outputs=[
+            {"weaknesses": []}
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"cluster_weaknesses expected JSON array payload"):
+        await cluster_weaknesses(
+            [make_attribution(1, ["recursion:base-case-missing"])],
+            eval_records=[make_eval_record(1, "recursive traversal on nested arrays")],
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=client,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_rejects_empty_payload_when_attributions_exist(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    client = FakeProvider(outputs=[[]])
+
+    with pytest.raises(ValueError, match=r"cluster_weaknesses expected non-empty JSON array payload"):
+        await cluster_weaknesses(
+            [make_attribution(1, ["recursion:base-case-missing"])],
+            eval_records=[make_eval_record(1, "recursive traversal on nested arrays")],
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=client,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_allows_empty_payload_when_attributions_are_empty(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    client = FakeProvider(outputs=[[]])
+
+    result = await cluster_weaknesses(
+        [],
+        eval_records=[],
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert result.weaknesses == []
+    assert result.evidence_question_ids == {}
+    assert output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_rejects_empty_resumed_artifact_when_attributions_exist(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    output_path.write_text('{"weaknesses":[],"evidence_question_ids":{}}')
+
+    with pytest.raises(ValueError, match=r"cluster_weaknesses expected non-empty JSON array payload"):
+        await cluster_weaknesses(
+            [make_attribution(1, ["recursion:base-case-missing"])],
+            eval_records=[make_eval_record(1, "recursive traversal on nested arrays")],
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=FakeProvider(outputs=[]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_allows_empty_resumed_artifact_when_attributions_are_empty(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    output_path.write_text('{"weaknesses":[],"evidence_question_ids":{}}')
+
+    result = await cluster_weaknesses(
+        [],
+        eval_records=[],
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=FakeProvider(outputs=[]),
+    )
+
+    assert result.weaknesses == []
+    assert result.evidence_question_ids == {}
+
+
 def test_map_questions_to_clusters_counts_multi_cluster_membership():
     attributions = [
         make_attribution(1, ["recursion:base-case-missing"]),

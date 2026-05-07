@@ -497,6 +497,64 @@ async def test_synthesize_refill_prompt_uses_latest_accepted_problem_context(tmp
 
 
 @pytest.mark.asyncio
+async def test_synthesize_problems_rejects_empty_refill_payload_with_clear_error(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    client = FakeProvider(
+        outputs=[
+            [
+                {
+                    "id": "S10001",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "accepted-first",
+                    "problem_statement": "a" * 240,
+                    "function_signature": "def solve_first(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["empty input"],
+                    "anti_homogeneity_notes": "first accepted",
+                    "input_scale_class": "accepted-scale",
+                    "data_shape_class": "accepted-shape",
+                    "primary_pitfall": "accepted-pitfall",
+                    "novelty_reason": "accepted-novelty",
+                },
+                {
+                    "id": "S10002",
+                    "weakness_id": "W001",
+                    "language": "python",
+                    "difficulty": "hard",
+                    "scenario": "accepted-first",
+                    "problem_statement": "b" * 240,
+                    "function_signature": "def solve_first(items: list[int]) -> int:",
+                    "input_format": "list[int]",
+                    "output_format": "int",
+                    "constraints": ["1 <= n <= 1e5"],
+                    "edge_cases_hinted": ["duplicate timestamps"],
+                    "anti_homogeneity_notes": "forces refill",
+                    "input_scale_class": "accepted-scale",
+                    "data_shape_class": "accepted-shape",
+                    "primary_pitfall": "accepted-pitfall",
+                    "novelty_reason": "forces-refill",
+                },
+            ],
+            [],
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"synthesize_for_weaknesses expected non-empty JSON array payload"):
+        await synthesize_for_weaknesses(
+            make_weakness_set(),
+            allocations={"W001": 2},
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=client,
+        )
+
+
+@pytest.mark.asyncio
 async def test_synthesize_problems_regenerates_duplicates_and_short_statements(tmp_path):
     output_path = tmp_path / "synthesized_problems.jsonl"
     client = FakeProvider(
@@ -1089,6 +1147,42 @@ async def test_synthesize_problems_retries_high_jaccard_similarity(tmp_path):
     assert result.retry_count >= 1
     lines = [json.loads(line) for line in output_path.read_text().strip().splitlines()]
     assert lines[-1]["id"] == "S00002"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_rejects_non_array_payload_with_clear_error(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    client = FakeProvider(
+        outputs=[
+            {"problems": []}
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"synthesize_for_weaknesses expected JSON array payload"):
+        await synthesize_for_weaknesses(
+            make_weakness_set(),
+            allocations={"W001": 1},
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=client,
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_problems_rejects_empty_top_level_batch_payload(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    client = FakeProvider(outputs=[[]])
+
+    with pytest.raises(ValueError, match=r"synthesize_for_weaknesses expected non-empty JSON array payload"):
+        await synthesize_for_weaknesses(
+            make_weakness_set(),
+            allocations={"W001": 1},
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=client,
+        )
 
 
 def test_has_high_similarity_detects_ngram_overlap():

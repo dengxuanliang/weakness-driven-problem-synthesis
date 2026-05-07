@@ -3,6 +3,7 @@ import asyncio
 
 from weakness_driven_problem_synthesis.attribute import attribute_failures
 from weakness_driven_problem_synthesis.llm_client import (
+    _openai_completion_mode,
     build_provider_client,
     complete_json,
 )
@@ -185,6 +186,14 @@ def test_eval_record_accepts_real_log_test_payload_as_dict():
 
     assert isinstance(record.test, dict)
     assert record.test["code"] == "assert True"
+
+
+def test_openai_completion_mode_uses_json_object_for_object_schema():
+    assert _openai_completion_mode({"type": "object"}) == "json_object"
+
+
+def test_openai_completion_mode_uses_plain_text_array_for_array_schema():
+    assert _openai_completion_mode({"type": "array"}) == "plain_text_array"
 
 
 @pytest.mark.asyncio
