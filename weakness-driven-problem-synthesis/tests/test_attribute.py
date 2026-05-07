@@ -101,6 +101,34 @@ class SimultaneousCompletionProvider:
         }
 
 
+class FakeOpenAIChatCompletions:
+    def __init__(self, content: str):
+        self.content = content
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+
+        class _Message:
+            def __init__(self, content: str):
+                self.content = content
+
+        class _Choice:
+            def __init__(self, content: str):
+                self.message = _Message(content)
+
+        class _Response:
+            def __init__(self, content: str):
+                self.choices = [_Choice(content)]
+
+        return _Response(self.content)
+
+
+class FakeOpenAIClient:
+    def __init__(self, content: str):
+        self.chat = type("ChatNamespace", (), {"completions": FakeOpenAIChatCompletions(content)})()
+
+
 @pytest.mark.asyncio
 async def test_complete_json_retries_invalid_json():
     client = FakeProvider(outputs=["not json", '{"ok": true}'])
@@ -136,6 +164,75 @@ def make_eval_record(question_id: int, content: str) -> EvalRecord:
             "pass_at_1": 0,
         }
     )
+
+
+def test_eval_record_accepts_real_log_test_payload_as_dict():
+    record = EvalRecord.model_validate(
+        {
+            "question_id": 1,
+            "content": "problem",
+            "canonical_solution": "def solve(): pass",
+            "completion": "def solve(): return None",
+            "test": {"code": "assert True"},
+            "labels": {
+                "category": "algorithms",
+                "programming_language": "python",
+                "difficulty": "hard",
+            },
+            "pass_at_1": 0,
+        }
+    )
+
+    assert isinstance(record.test, dict)
+    assert record.test["code"] == "assert True"
+
+
+@pytest.mark.asyncio
+async def test_complete_json_uses_openai_chat_completions_json_mode():
+    provider_client = type(
+        "ProviderStub",
+        (),
+        {
+            "model": "test-model",
+            "complete_json": None,
+        },
+    )()
+    chat_client = FakeOpenAIClient('{"ok": true}')
+
+    from weakness_driven_problem_synthesis.llm_client import OpenAIProviderClient
+
+    client = OpenAIProviderClient(provider="openai", model="test-model", client=chat_client)
+    result = await complete_json(
+        "prompt",
+        {"type": "object"},
+        provider_client=client,
+        model="test-model",
+    )
+
+    assert result == {"ok": True}
+    call = chat_client.chat.completions.calls[0]
+    assert call["response_format"] == {"type": "json_object"}
+    assert call["messages"][-1]["content"] == "prompt"
+
+
+@pytest.mark.asyncio
+async def test_complete_json_uses_plain_text_mode_for_openai_array_schema():
+    chat_client = FakeOpenAIClient('[{"id":"W1","name":"n","description":"d","covered_tags":["t"],"dominant_language":"python","dominant_category":"algorithms"}]')
+
+    from weakness_driven_problem_synthesis.llm_client import OpenAIProviderClient
+
+    client = OpenAIProviderClient(provider="openai", model="test-model", client=chat_client)
+    result = await complete_json(
+        "prompt",
+        {"type": "array"},
+        provider_client=client,
+        model="test-model",
+    )
+
+    assert isinstance(result, list)
+    call = chat_client.chat.completions.calls[0]
+    assert "response_format" not in call
+    assert "JSON array" in call["messages"][0]["content"]
 
 
 @pytest.mark.asyncio

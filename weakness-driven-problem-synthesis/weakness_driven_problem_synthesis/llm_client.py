@@ -45,20 +45,25 @@ class OpenAIProviderClient(ProviderClient):
         max_tokens: int,
         model: str,
     ) -> str:
-        response = await self.client.responses.create(
+        effective_system = system
+        request_kwargs: dict[str, Any] = {}
+        if schema.get("type") == "array":
+            array_instruction = (
+                "Return valid JSON only. "
+                "The top-level value must be a JSON array. "
+                "The first character must be '[' and the last character must be ']'."
+            )
+            effective_system = array_instruction if system is None else f"{system}\n\n{array_instruction}"
+        else:
+            request_kwargs["response_format"] = {"type": "json_object"}
+
+        response = await self.client.chat.completions.create(
             model=model,
-            input=_build_openai_input(prompt=prompt, system=system),
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "structured_output",
-                    "schema": schema,
-                    "strict": True,
-                }
-            },
-            max_output_tokens=max_tokens,
+            messages=_build_openai_messages(prompt=prompt, system=effective_system),
+            max_tokens=max_tokens,
+            **request_kwargs,
         )
-        return response.output_text
+        return response.choices[0].message.content
 
 
 @dataclass
@@ -91,19 +96,19 @@ class AnthropicProviderClient(ProviderClient):
         return "".join(text_blocks)
 
 
-def _build_openai_input(*, prompt: str, system: str | None) -> list[dict[str, Any]]:
+def _build_openai_messages(*, prompt: str, system: str | None) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     if system:
         items.append(
             {
                 "role": "system",
-                "content": [{"type": "input_text", "text": system}],
+                "content": system,
             }
         )
     items.append(
         {
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
+            "content": prompt,
         }
     )
     return items

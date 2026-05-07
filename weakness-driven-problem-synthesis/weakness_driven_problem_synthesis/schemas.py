@@ -1,6 +1,8 @@
 """Schema definitions for the synthesis pipeline."""
 
-from pydantic import BaseModel
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EvalLabels(BaseModel):
@@ -10,11 +12,12 @@ class EvalLabels(BaseModel):
 
 
 class EvalRecord(BaseModel):
-    question_id: int | None = None
+    model_config = ConfigDict(populate_by_name=True)
+    question_id: int | None = Field(default=None, alias="id")
     content: str
     canonical_solution: str
     completion: str
-    test: str
+    test: str | dict[str, Any]
     labels: EvalLabels
     pass_at_1: bool | int | float | None
 

@@ -1,4 +1,6 @@
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -250,3 +252,15 @@ async def test_pipeline_excludes_non_truly_failed_attributions_from_clustering(t
     )
 
     assert exit_code == 0
+
+
+def test_module_cli_entrypoint_executes_and_prints_help():
+    result = subprocess.run(
+        [sys.executable, "-m", "weakness_driven_problem_synthesis.run", "--help"],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+
+    assert result.returncode == 0
+    assert "--eval-log" in result.stdout

@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import shutil
+import sys
 from pathlib import Path
 
 from weakness_driven_problem_synthesis.allocate import allocate_quotas
@@ -121,3 +122,11 @@ async def main_with_args(argv: list[str]) -> int:
         sampled_problems=sampled,
     )
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    return asyncio.run(main_with_args(argv if argv is not None else sys.argv[1:]))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
