@@ -27,6 +27,13 @@ STAGE_ARTIFACTS = (
 )
 
 
+def _validate_allocations(allocations: dict[str, int], *, total_questions: int) -> None:
+    if any(value < 0 for value in allocations.values()):
+        raise ValueError("allocations must not contain negative quotas")
+    if sum(allocations.values()) != total_questions:
+        raise ValueError("allocations must sum to total_questions")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-log", required=True)
@@ -99,6 +106,7 @@ async def main_with_args(argv: list[str]) -> int:
         {weakness.id: len(weakness_set.evidence_question_ids.get(weakness.id, [])) for weakness in weakness_set.weaknesses},
         args.total_questions,
     )
+    _validate_allocations(allocations, total_questions=args.total_questions)
     synthesis_summary = await synthesize_for_weaknesses(
         weakness_set,
         allocations=allocations,

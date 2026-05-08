@@ -8,4 +8,15 @@ Return JSON only with:
 - `ability_dimensions`
 - `evidence_snippet`
 
-Reuse existing tags when possible. Prefer the provided vocabulary.
+Rules:
+- Diagnose the underlying cause, not just the surface mismatch.
+- `root_cause` must explain why the solution failed.
+- Reuse existing vocabulary and seen tags when they fit.
+- Prefer stable, reusable tags over problem-specific ones.
+- Only introduce a new tag if no existing tag is precise enough.
+- `ability_dimensions` should name the broader capability gap.
+- `evidence_snippet` must be short and directly support the diagnosis.
+
+Tagging guidance:
+- Prefer stable classes such as interface mismatch, spec mismatch, state handling, edge cases, API misuse, data-structure misuse, algorithm choice, lifecycle issues, or domain-rule misunderstanding.
+- Do not overfit to wording in the test case or one literal assertion.
