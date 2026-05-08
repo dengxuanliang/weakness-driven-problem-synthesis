@@ -175,6 +175,7 @@ async def test_synthesize_problems_updates_progress_for_each_accepted_problem(tm
     assert progress.initial == 0
     assert progress.updates == [1, 1]
     assert progress.closed is True
+    assert client.calls[0]["max_tokens"] > 4096
 
 
 @pytest.mark.asyncio

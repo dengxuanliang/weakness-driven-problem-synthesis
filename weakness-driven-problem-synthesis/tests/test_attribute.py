@@ -418,6 +418,46 @@ async def test_attribute_failures_includes_existing_seen_tags_in_prompt(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_attribute_failures_truncates_oversized_test_payload_in_prompt(tmp_path):
+    output_path = tmp_path / "error_attributions.jsonl"
+    client = FakeProvider(
+        outputs=[
+            '{"question_id": 9, "is_truly_failed": true, "error_tags": ["tag:9"], "root_cause": "r9", "ability_dimensions": ["a9"], "evidence_snippet": "e9"}',
+        ]
+    )
+    record = EvalRecord.model_validate(
+        {
+            "question_id": 9,
+            "content": "problem",
+            "canonical_solution": "def solve(): pass",
+            "completion": "def solve(): return None",
+            "test": "x" * 200_000,
+            "labels": {
+                "category": "algorithms",
+                "programming_language": "python",
+                "difficulty": "hard",
+            },
+            "pass_at_1": 0,
+        }
+    )
+
+    await attribute_failures(
+        [record],
+        output_path=output_path,
+        provider_client=client,
+        provider="openai",
+        model="test-model",
+        concurrency=1,
+    )
+
+    prompt = client.calls[0]["prompt"]
+    assert "Test:\n" in prompt
+    assert "[truncated " in prompt
+    assert " chars]" in prompt
+    assert len(prompt) < 100_000
+
+
+@pytest.mark.asyncio
 async def test_attribute_failures_updates_seen_tags_during_same_run(tmp_path):
     output_path = tmp_path / "error_attributions.jsonl"
     client = FakeProvider(

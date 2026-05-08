@@ -10,6 +10,8 @@ from weakness_driven_problem_synthesis.llm_client import complete_json
 from weakness_driven_problem_synthesis.prompts import load_prompt, load_reference
 from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord
 
+MAX_TEST_CHARS = 50_000
+
 
 def _build_progress_bar(*, total: int, initial: int, desc: str, unit: str) -> Any:
     try:
@@ -39,6 +41,13 @@ def _load_existing_attributions(output_path: Path) -> list[Attribution]:
     return results
 
 
+def _truncate_test_text(text: str, *, max_chars: int = MAX_TEST_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    return f"{text[:max_chars]}\n[truncated {omitted} chars]"
+
+
 async def _attribute_record(
     record: EvalRecord,
     *,
@@ -50,6 +59,7 @@ async def _attribute_record(
     vocabulary = load_reference("error_tag_vocabulary.md")
     prompt_template = load_prompt("attribute.txt")
     seen_tags_section = ", ".join(sorted(seen_tags)) if seen_tags else "none"
+    test_text = _truncate_test_text(record.test_text)
     prompt = (
         f"{prompt_template}\n\n"
         f"Vocabulary:\n{vocabulary}\n\n"
@@ -59,7 +69,7 @@ async def _attribute_record(
         f"Canonical solution:\n{record.canonical_solution}\n\n"
         f"Completion:\n{record.completion}\n\n"
         f"Labels: category={record.labels.category}, language={record.labels.programming_language}, difficulty={record.labels.difficulty}\n"
-        f"Test:\n{record.test_text}\n"
+        f"Test:\n{test_text}\n"
     )
     payload = await complete_json(
         prompt,

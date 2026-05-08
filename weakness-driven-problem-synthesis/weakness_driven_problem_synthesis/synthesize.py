@@ -20,6 +20,7 @@ PER_SLOT_RETRY_LIMIT = 3
 MAX_EXTRA_BATCHES = 2
 RECENT_SUMMARY_LIMIT = 20
 MAX_COVERAGE_BUCKETS = 12
+SYNTHESIS_MAX_TOKENS = 12_000
 
 
 def _build_progress_bar(*, total: int, initial: int, desc: str, unit: str) -> Any:
@@ -185,6 +186,7 @@ async def synthesize_for_weaknesses(
                     {"type": "array"},
                     provider=provider,
                     model=model,
+                    max_tokens=SYNTHESIS_MAX_TOKENS,
                     provider_client=provider_client,
                 )
 
@@ -244,6 +246,7 @@ async def synthesize_for_weaknesses(
                             {"type": "array"},
                             provider=provider,
                             model=model,
+                            max_tokens=SYNTHESIS_MAX_TOKENS,
                             provider_client=provider_client,
                         )
                         refill_candidates = _expect_non_empty_array_payload(
