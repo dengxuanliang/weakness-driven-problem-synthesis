@@ -30,6 +30,11 @@ def test_attribute_prompt_includes_root_cause_and_tagging_guidance():
     assert "Rules:" in prompt
     assert "- Diagnose the underlying cause, not just the surface mismatch." in prompt
     assert "- `root_cause` must explain why the solution failed." in prompt
+    assert (
+        "- `root_cause` should describe the immediate failure mechanism; `ability_dimensions` should describe the broader capability gap."
+        in prompt
+    )
+    assert "- Use a small set of tags that best explain the failure; do not enumerate every symptom." in prompt
     assert "Tagging guidance:" in prompt
     assert "- Prefer stable, reusable tags over problem-specific ones." in prompt
 
@@ -39,5 +44,10 @@ def test_cluster_prompt_includes_grouping_and_granularity_guidance():
 
     assert "Rules:" in prompt
     assert "- Group by shared underlying weakness, not surface topic or wording." in prompt
+    assert "- `name` should describe the reusable weakness, not just restate one tag." in prompt
     assert "- Prefer a small number of coherent groups over many fragmented ones." in prompt
+    assert (
+        "- Use a singleton group only when the failure mode is clearly distinct and not well covered by any broader group."
+        in prompt
+    )
     assert "- Do not collapse clearly different weaknesses into one bucket." in prompt

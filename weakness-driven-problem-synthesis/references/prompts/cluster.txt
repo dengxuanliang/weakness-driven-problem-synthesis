@@ -14,7 +14,9 @@ Rules:
 - Do not split one weakness only because the domain or language differs.
 - Do not merge different root causes just because they both failed tests.
 - `name` must be concise and reusable.
+- `name` should describe the reusable weakness, not just restate one tag.
 - `description` should explain the shared capability gap in 1-2 sentences.
 - `covered_tags` should contain only tags that truly belong together.
 - Prefer a small number of coherent groups over many fragmented ones.
+- Use a singleton group only when the failure mode is clearly distinct and not well covered by any broader group.
 - Do not collapse clearly different weaknesses into one bucket.
