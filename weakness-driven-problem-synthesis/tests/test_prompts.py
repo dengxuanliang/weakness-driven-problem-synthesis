@@ -13,6 +13,10 @@ def test_synthesize_prompt_includes_content_safety_constraints():
         "- Keep all meta rationale only in `anti_homogeneity_notes`, `primary_pitfall`, and `novelty_reason`, never in solver-facing fields."
         in prompt
     )
+    assert (
+        '- Do not include coaching or cautionary phrasing in solver-facing fields, such as "be careful", "watch out", "note that", "remember that", or similar guidance language.'
+        in prompt
+    )
     assert "Global diversity preference:" in prompt
     assert (
         "- Avoid reusing an already-common `(input_scale_class, data_shape_class)` combination when a different combination would fit."

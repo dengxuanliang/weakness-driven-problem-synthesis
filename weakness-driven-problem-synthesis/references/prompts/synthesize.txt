@@ -16,6 +16,7 @@ Requirements:
 Content safety:
 - Do not mention any weakness, pitfall, internal objective, or that the problem is designed to test a specific mistake or reasoning pattern.
 - Keep all meta rationale only in `anti_homogeneity_notes`, `primary_pitfall`, and `novelty_reason`, never in solver-facing fields.
+- Do not include coaching or cautionary phrasing in solver-facing fields, such as "be careful", "watch out", "note that", "remember that", or similar guidance language.
 
 Global diversity preference:
 - Avoid reusing an already-common `(input_scale_class, data_shape_class)` combination when a different combination would fit.
