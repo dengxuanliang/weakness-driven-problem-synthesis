@@ -16,6 +16,7 @@ BASE_BATCH_SIZE = 10
 MIN_STATEMENT_CHARS = 200
 NGRAM_N = 4
 SIMILARITY_THRESHOLD = 0.6
+SHAPE_COMBO_SIMILARITY_THRESHOLD = 0.35
 PER_SLOT_RETRY_LIMIT = 3
 MAX_EXTRA_BATCHES = 2
 RECENT_SUMMARY_LIMIT = 20
@@ -132,6 +133,17 @@ def has_high_similarity(candidate_statement: str, existing_problems: list[dict])
     return False
 
 
+def has_similar_shape_combo(candidate: dict, existing_problems: list[dict]) -> bool:
+    candidate_combo = (candidate.get("input_scale_class", ""), candidate.get("data_shape_class", ""))
+    candidate_statement = candidate.get("problem_statement", "")
+    for problem in existing_problems:
+        if candidate_combo != (problem.get("input_scale_class", ""), problem.get("data_shape_class", "")):
+            continue
+        if ngram_jaccard(candidate_statement, problem["problem_statement"], n=NGRAM_N) >= SHAPE_COMBO_SIMILARITY_THRESHOLD:
+            return True
+    return False
+
+
 async def synthesize_for_weaknesses(
     weakness_set: WeaknessSet,
     *,
@@ -210,7 +222,8 @@ async def synthesize_for_weaknesses(
                         same_weakness_existing = existing_by_weakness.get(weakness.id, [])
                         is_duplicate = key in seen_keys or attempted_duplicate
                         is_similar = has_high_similarity(candidate.problem_statement, same_weakness_existing)
-                        if not is_short and not is_duplicate and not is_similar:
+                        reused_shape_combo = has_similar_shape_combo(candidate.model_dump(), same_weakness_existing)
+                        if not is_short and not is_duplicate and not is_similar and not reused_shape_combo:
                             record = candidate.model_dump()
                             record["batch_index"] = batch_index
                             with output_path.open("a") as handle:

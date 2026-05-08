@@ -8,10 +8,14 @@ from pathlib import Path
 
 def _build_solver_prompt(problem: dict) -> str:
     constraint_lines = "\n".join(f"- {item}" for item in problem["constraints"])
+    if problem["language"] == "html":
+        interface_label = "Required output form"
+    else:
+        interface_label = "Function signature"
     return (
         f"Solve this problem in {problem['language']}.\n\n"
         f"{problem['problem_statement']}\n\n"
-        f"Function signature:\n{problem['function_signature']}\n\n"
+        f"{interface_label}:\n{problem['function_signature']}\n\n"
         f"Input:\n{problem['input_format']}\n\n"
         f"Output:\n{problem['output_format']}\n\n"
         f"Constraints:\n{constraint_lines}\n\n"

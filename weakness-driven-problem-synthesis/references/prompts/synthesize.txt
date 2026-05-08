@@ -17,6 +17,10 @@ Content safety:
 - Do not mention any weakness, pitfall, internal objective, or that the problem is designed to test a specific mistake or reasoning pattern.
 - Keep all meta rationale only in `anti_homogeneity_notes`, `primary_pitfall`, and `novelty_reason`, never in solver-facing fields.
 
+Global diversity preference:
+- Avoid reusing an already-common `(input_scale_class, data_shape_class)` combination when a different combination would fit.
+- If a scale/shape combination must be reused, make the `scenario` and `primary_pitfall` clearly different from prior accepted problems.
+
 Batch diversity:
 Each item in this batch must differ from the others by:
 - scenario

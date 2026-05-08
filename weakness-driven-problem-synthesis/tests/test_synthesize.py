@@ -71,6 +71,44 @@ def make_weakness_set() -> WeaknessSet:
     )
 
 
+def make_problem(
+    *,
+    id: str,
+    weakness_id: str = "W001",
+    language: str = "python",
+    scenario: str = "scenario",
+    problem_statement: str = "x" * 240,
+    function_signature: str = "def solve(items: list[int]) -> int:",
+    input_format: str = "list[int]",
+    output_format: str = "int",
+    constraints: list[str] | None = None,
+    edge_cases_hinted: list[str] | None = None,
+    anti_homogeneity_notes: str = "note",
+    input_scale_class: str = "scale-a",
+    data_shape_class: str = "shape-a",
+    primary_pitfall: str = "pitfall-a",
+    novelty_reason: str = "novelty-a",
+) -> dict:
+    return {
+        "id": id,
+        "weakness_id": weakness_id,
+        "language": language,
+        "difficulty": "hard",
+        "scenario": scenario,
+        "problem_statement": problem_statement,
+        "function_signature": function_signature,
+        "input_format": input_format,
+        "output_format": output_format,
+        "constraints": constraints or ["1 <= n <= 1e5"],
+        "edge_cases_hinted": edge_cases_hinted or ["empty input"],
+        "anti_homogeneity_notes": anti_homogeneity_notes,
+        "input_scale_class": input_scale_class,
+        "data_shape_class": data_shape_class,
+        "primary_pitfall": primary_pitfall,
+        "novelty_reason": novelty_reason,
+    }
+
+
 @pytest.mark.asyncio
 async def test_synthesize_problems_respects_existing_batches_on_resume(tmp_path):
     output_path = tmp_path / "synthesized_problems.jsonl"
@@ -776,6 +814,106 @@ async def test_synthesize_problems_regenerates_duplicates_and_short_statements(t
     assert len(lines) == 1
     stored = json.loads(lines[0])
     assert stored["id"] == "S00003"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_allows_reused_scale_shape_when_statement_is_distinct(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    output_path.write_text(
+        json.dumps(
+            make_problem(
+                id="S00000",
+                scenario="existing scenario",
+                problem_statement="alpha " * 50,
+                input_scale_class="2e5-hierarchy-queries",
+                data_shape_class="grouped-time-series",
+                primary_pitfall="boundary-reset",
+            )
+        )
+        + "\n"
+    )
+    client = FakeProvider(
+        outputs=[
+            [
+                make_problem(
+                    id="S00001",
+                    scenario="new scenario",
+                    problem_statement="omega " * 50,
+                    input_scale_class="2e5-hierarchy-queries",
+                    data_shape_class="grouped-time-series",
+                    primary_pitfall="ordering-stability",
+                )
+            ]
+        ]
+    )
+
+    result = await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 2},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert result.completed == 2
+    lines = output_path.read_text().strip().splitlines()
+    assert len(lines) == 2
+
+
+@pytest.mark.asyncio
+async def test_synthesize_regenerates_reused_scale_shape_when_statement_is_also_similar(tmp_path):
+    output_path = tmp_path / "synthesized_problems.jsonl"
+    output_path.write_text(
+        json.dumps(
+            make_problem(
+                id="S00000",
+                scenario="existing scenario",
+                problem_statement="alpha beta gamma delta epsilon zeta eta theta",
+                input_scale_class="2e5-hierarchy-queries",
+                data_shape_class="grouped-time-series",
+                primary_pitfall="boundary-reset",
+            )
+        )
+        + "\n"
+    )
+    client = FakeProvider(
+        outputs=[
+            [
+                make_problem(
+                    id="S00001",
+                    scenario="near scenario",
+                    problem_statement="alpha beta gamma delta epsilon zeta eta lambda",
+                    input_scale_class="2e5-hierarchy-queries",
+                    data_shape_class="grouped-time-series",
+                    primary_pitfall="ordering-stability",
+                )
+            ],
+            [
+                make_problem(
+                    id="S00002",
+                    scenario="fresh scenario",
+                    problem_statement="omega " * 50,
+                    input_scale_class="fresh-scale",
+                    data_shape_class="fresh-shape",
+                    primary_pitfall="fresh-pitfall",
+                )
+            ],
+        ]
+    )
+
+    result = await synthesize_for_weaknesses(
+        make_weakness_set(),
+        allocations={"W001": 2},
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert result.retry_count == 1
+    lines = [json.loads(line) for line in output_path.read_text().strip().splitlines()]
+    assert lines[-1]["id"] == "S00002"
 
 
 @pytest.mark.asyncio

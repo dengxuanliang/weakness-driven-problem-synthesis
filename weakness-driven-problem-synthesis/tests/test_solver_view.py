@@ -63,3 +63,38 @@ def test_write_solver_view_exports_only_solver_fields_and_prompt(tmp_path):
     )
     assert "Edge cases" not in record["solver_prompt"]
     assert "Return only code." in record["solver_prompt"]
+
+
+def test_write_solver_view_uses_document_label_for_html_problems(tmp_path):
+    synth_path = tmp_path / "synthesized_problems.jsonl"
+    solver_path = tmp_path / "solver_view.jsonl"
+    synth_path.write_text(
+        json.dumps(
+            {
+                "id": "S00002",
+                "weakness_id": "WG01",
+                "batch_index": 0,
+                "language": "html",
+                "difficulty": "hard",
+                "scenario": "demo html",
+                "problem_statement": "Build a standalone HTML document.",
+                "function_signature": "<!DOCTYPE html><html><body>...</body></html>",
+                "input_format": "No external input.",
+                "output_format": "A complete HTML document.",
+                "constraints": ["Must be standalone"],
+                "edge_cases_hinted": ["empty input"],
+                "anti_homogeneity_notes": "internal note",
+                "input_scale_class": "scale-a",
+                "data_shape_class": "shape-a",
+                "primary_pitfall": "pitfall-a",
+                "novelty_reason": "novelty-a",
+            }
+        )
+        + "\n"
+    )
+
+    write_solver_view(synthesized_path=synth_path, solver_view_path=solver_path)
+
+    record = json.loads(solver_path.read_text().strip())
+    assert "Function signature:" not in record["solver_prompt"]
+    assert "Required output form:" in record["solver_prompt"]
