@@ -14,7 +14,7 @@ from weakness_driven_problem_synthesis.attribute import attribute_failures
 from weakness_driven_problem_synthesis.cluster import cluster_weaknesses
 from weakness_driven_problem_synthesis.load_filter import load_failed_records
 from weakness_driven_problem_synthesis.report import write_report
-from weakness_driven_problem_synthesis.schemas import SynthesisSummary
+from weakness_driven_problem_synthesis.schemas import SynthesisSummary, WeaknessSet
 from weakness_driven_problem_synthesis.solver_view import write_solver_view
 from weakness_driven_problem_synthesis.synthesize import synthesize_for_weaknesses
 
@@ -32,6 +32,40 @@ def _validate_allocations(allocations: dict[str, int], *, total_questions: int) 
         raise ValueError("allocations must not contain negative quotas")
     if sum(allocations.values()) != total_questions:
         raise ValueError("allocations must sum to total_questions")
+
+
+def _empty_synthesis_summary() -> SynthesisSummary:
+    return SynthesisSummary(completed=0, retry_count=0)
+
+
+def _empty_weakness_set() -> WeaknessSet:
+    return WeaknessSet(weaknesses=[], evidence_question_ids={})
+
+
+def _write_empty_weaknesses_artifact(*, output_path: Path) -> None:
+    output_path.write_text(_empty_weakness_set().model_dump_json(indent=2))
+
+
+def _clear_stale_outputs_for_empty_run(*, output_dir: Path) -> None:
+    for artifact_name in (
+        "error_attributions.jsonl",
+        "synthesized_problems.jsonl",
+        "solver_view.jsonl",
+    ):
+        artifact_path = output_dir / artifact_name
+        if artifact_path.exists():
+            artifact_path.unlink()
+
+
+def _write_empty_report(*, report_path: Path, failed_count: int) -> None:
+    write_report(
+        report_path=report_path,
+        failed_count=failed_count,
+        weakness_set=_empty_weakness_set(),
+        allocations={},
+        synthesis_summary=_empty_synthesis_summary(),
+        sampled_problems={},
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,9 +95,10 @@ def prepare_output_dir(output_dir: Path, *, restart: bool, resume: bool = True) 
 
 
 def estimate_call_counts(*, failed_count: int, total_questions: int, batch_size: int = 10) -> dict[str, int]:
+    synthesis_batches = 0 if failed_count <= 0 else (total_questions + batch_size - 1) // batch_size
     return {
         "attribution_calls": failed_count,
-        "synthesis_batches": (total_questions + batch_size - 1) // batch_size,
+        "synthesis_batches": synthesis_batches,
     }
 
 
@@ -87,6 +122,13 @@ async def main_with_args(argv: list[str]) -> int:
     if not should_continue_after_estimate(non_interactive=args.yes):
         return 1
 
+    report_path = output_dir / "report.md"
+    if not failed_records:
+        _clear_stale_outputs_for_empty_run(output_dir=output_dir)
+        _write_empty_weaknesses_artifact(output_path=output_dir / "weaknesses.json")
+        _write_empty_report(report_path=report_path, failed_count=0)
+        return 0
+
     error_attributions = await attribute_failures(
         failed_records,
         output_path=output_dir / "error_attributions.jsonl",
@@ -95,6 +137,12 @@ async def main_with_args(argv: list[str]) -> int:
         concurrency=args.concurrency,
     )
     truly_failed_attributions = [item for item in error_attributions if item.is_truly_failed]
+    if not truly_failed_attributions:
+        _clear_stale_outputs_for_empty_run(output_dir=output_dir)
+        _write_empty_weaknesses_artifact(output_path=output_dir / "weaknesses.json")
+        _write_empty_report(report_path=report_path, failed_count=len(failed_records))
+        return 0
+
     weakness_set = await cluster_weaknesses(
         truly_failed_attributions,
         eval_records=failed_records,
@@ -114,7 +162,6 @@ async def main_with_args(argv: list[str]) -> int:
         provider=args.provider,
         model=args.model,
     )
-    report_path = output_dir / "report.md"
     sampled = {}
     synth_path = output_dir / "synthesized_problems.jsonl"
     if synth_path.exists():

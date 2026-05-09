@@ -1,4 +1,4 @@
-from weakness_driven_problem_synthesis.schemas import EvalRecord, SynthProblem
+from weakness_driven_problem_synthesis.schemas import EvalRecord, SynthProblem, SynthesisSummary
 
 
 def test_eval_record_normalizes_failed_pass_values():
@@ -41,3 +41,14 @@ def test_synth_problem_requires_all_fields():
             "novelty_reason": "Uses boundary-sensitive traversal under large input.",
         }
     )
+
+
+def test_synthesis_summary_default_dicts_are_not_shared():
+    first = SynthesisSummary(completed=0, retry_count=0)
+    second = SynthesisSummary(completed=0, retry_count=0)
+
+    first.completed_by_weakness["W001"] = 1
+    first.shortfall_by_weakness["W001"] = 2
+
+    assert second.completed_by_weakness == {}
+    assert second.shortfall_by_weakness == {}

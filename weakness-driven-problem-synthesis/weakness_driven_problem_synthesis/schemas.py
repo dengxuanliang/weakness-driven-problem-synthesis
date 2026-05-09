@@ -79,5 +79,5 @@ class SynthesisSummary(BaseModel):
     dropped: int = 0
     skipped: int = 0
     extra_batches: int = 0
-    completed_by_weakness: dict[str, int] = {}
-    shortfall_by_weakness: dict[str, int] = {}
+    completed_by_weakness: dict[str, int] = Field(default_factory=dict)
+    shortfall_by_weakness: dict[str, int] = Field(default_factory=dict)

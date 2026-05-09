@@ -71,6 +71,12 @@ def test_estimate_call_counts_uses_failed_count_and_batch_size():
     assert estimates["synthesis_batches"] == 3
 
 
+def test_estimate_call_counts_reports_zero_synthesis_batches_when_no_failures():
+    estimates = estimate_call_counts(failed_count=0, total_questions=50, batch_size=10)
+    assert estimates["attribution_calls"] == 0
+    assert estimates["synthesis_batches"] == 0
+
+
 def test_validate_allocations_rejects_negative_or_mismatched_totals():
     with pytest.raises(ValueError, match="must not contain negative quotas"):
         _validate_allocations({"W001": -1, "W002": 2}, total_questions=1)
@@ -267,6 +273,102 @@ async def test_pipeline_excludes_non_truly_failed_attributions_from_clustering(t
     )
 
     assert exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_empty_report_when_no_failed_records(tmp_path, monkeypatch):
+    eval_log = tmp_path / "eval.jsonl"
+    output_dir = tmp_path / "out"
+    eval_log.write_text(
+        '{"question_id":1,"content":"a","canonical_solution":"x","completion":"x","test":"t","labels":{"category":"c","programming_language":"python","difficulty":"hard"},"pass_at_1":1}\n'
+    )
+    output_dir.mkdir()
+    (output_dir / "error_attributions.jsonl").write_text("stale attribution\n")
+    (output_dir / "synthesized_problems.jsonl").write_text("stale synth\n")
+    (output_dir / "solver_view.jsonl").write_text("stale solver\n")
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("downstream llm stages should not run when there are no failed records")
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.attribute_failures", fail_if_called)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.cluster_weaknesses", fail_if_called)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.synthesize_for_weaknesses", fail_if_called)
+
+    exit_code = await main_with_args(
+        [
+            "--eval-log",
+            str(eval_log),
+            "--total-questions",
+            "5",
+            "--output-dir",
+            str(output_dir),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 0
+    report_text = (output_dir / "report.md").read_text()
+    assert (output_dir / "weaknesses.json").read_text() == '{\n  "weaknesses": [],\n  "evidence_question_ids": {}\n}'
+    assert "Failed questions: 0" in report_text
+    assert "Weaknesses: 0" in report_text
+    assert "Synthesized problems: 0" in report_text
+    assert not (output_dir / "error_attributions.jsonl").exists()
+    assert not (output_dir / "synthesized_problems.jsonl").exists()
+    assert not (output_dir / "solver_view.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_empty_report_when_no_truly_failed_attributions(tmp_path, monkeypatch):
+    eval_log = tmp_path / "eval.jsonl"
+    output_dir = tmp_path / "out"
+    eval_log.write_text(
+        '{"question_id":1,"content":"a","canonical_solution":"x","completion":"y","test":"t","labels":{"category":"c","programming_language":"python","difficulty":"hard"},"pass_at_1":0}\n'
+    )
+    output_dir.mkdir()
+    (output_dir / "error_attributions.jsonl").write_text("stale attribution\n")
+    (output_dir / "synthesized_problems.jsonl").write_text("stale synth\n")
+    (output_dir / "solver_view.jsonl").write_text("stale solver\n")
+
+    async def fake_attribute_failures(*args, **kwargs):
+        return [
+            Attribution(
+                question_id=1,
+                is_truly_failed=False,
+                error_tags=["judge:false-positive"],
+                root_cause="equivalent answer",
+                ability_dimensions=["reasoning"],
+                evidence_snippet="return ans",
+            )
+        ]
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("downstream synthesis stages should not run when no true failures remain")
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.attribute_failures", fake_attribute_failures)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.cluster_weaknesses", fail_if_called)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.synthesize_for_weaknesses", fail_if_called)
+
+    exit_code = await main_with_args(
+        [
+            "--eval-log",
+            str(eval_log),
+            "--total-questions",
+            "5",
+            "--output-dir",
+            str(output_dir),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 0
+    report_text = (output_dir / "report.md").read_text()
+    assert (output_dir / "weaknesses.json").read_text() == '{\n  "weaknesses": [],\n  "evidence_question_ids": {}\n}'
+    assert "Failed questions: 1" in report_text
+    assert "Weaknesses: 0" in report_text
+    assert "Synthesized problems: 0" in report_text
+    assert not (output_dir / "error_attributions.jsonl").exists()
+    assert not (output_dir / "synthesized_problems.jsonl").exists()
+    assert not (output_dir / "solver_view.jsonl").exists()
 
 
 def test_module_cli_entrypoint_executes_and_prints_help():
