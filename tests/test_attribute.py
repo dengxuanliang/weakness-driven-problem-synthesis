@@ -1,9 +1,11 @@
 import pytest
 import asyncio
+from pathlib import Path
 
 from weakness_driven_problem_synthesis.attribute import attribute_failures
 from weakness_driven_problem_synthesis.llm_client import (
     _openai_completion_mode,
+    _load_env_file_if_needed,
     build_provider_client,
     complete_json,
 )
@@ -186,6 +188,42 @@ async def test_complete_json_includes_last_raw_output_preview_when_retries_exhau
 def test_missing_api_key_fails_fast(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
+        build_provider_client(provider="openai", model=None)
+
+
+def test_load_env_file_if_needed_does_not_override_existing_environment(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=from_dotenv\nOPENAI_BASE_URL=https://dotenv.example\n")
+    monkeypatch.setenv("OPENAI_API_KEY", "from_env")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    _load_env_file_if_needed(env_path=env_path)
+
+    assert Path(env_path).exists()
+    assert __import__("os").environ["OPENAI_API_KEY"] == "from_env"
+    assert __import__("os").environ["OPENAI_BASE_URL"] == "https://dotenv.example"
+
+
+def test_load_env_file_if_needed_uses_dotenv_as_fallback(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=from_dotenv\nOPENAI_BASE_URL=https://dotenv.example\n")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    _load_env_file_if_needed(env_path=env_path)
+
+    assert __import__("os").environ["OPENAI_API_KEY"] == "from_dotenv"
+    assert __import__("os").environ["OPENAI_BASE_URL"] == "https://dotenv.example"
+
+
+def test_missing_api_key_still_fails_when_env_and_dotenv_are_both_absent(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "weakness_driven_problem_synthesis.llm_client._repo_root",
+        lambda: tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="Missing required environment variable: OPENAI_API_KEY"):
         build_provider_client(provider="openai", model=None)
 
 

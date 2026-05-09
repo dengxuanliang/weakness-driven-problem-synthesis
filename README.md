@@ -116,6 +116,8 @@ Optional debug dump path:
 export WEAKNESS_SYNTH_DEBUG_PATH=debug_invalid_json.txt
 ```
 
+The loader checks environment variables first. If a required value is missing, it falls back to the repository-root `.env` file. `.env` never overrides an already-set environment variable.
+
 You can also store local secrets in `.env`, but that file must remain uncommitted.
 
 ## Usage

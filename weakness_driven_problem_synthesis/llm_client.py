@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -130,9 +131,34 @@ def _build_openai_messages(*, prompt: str, system: str | None) -> list[dict[str,
     return items
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _load_env_file_if_needed(*, env_path: Path | None = None) -> None:
+    path = env_path or (_repo_root() / ".env")
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
 def build_provider_client(provider: str, model: str | None) -> ProviderClient:
     if provider not in DEFAULT_MODELS:
         raise RuntimeError(f"Unsupported provider: {provider}")
+
+    _load_env_file_if_needed()
 
     env_var = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
     if not os.getenv(env_var):

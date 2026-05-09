@@ -50,6 +50,8 @@ Expected environment variables:
 - `ANTHROPIC_API_KEY`
 - `WEAKNESS_SYNTH_DEBUG_PATH` for optional invalid-JSON dumps
 
+Environment variables take priority. If a required value is missing, the loader falls back to the repository-root `.env` file. `.env` never overrides an already-set environment variable.
+
 Local secrets may be stored in `.env`, but `.env` must never be committed.
 
 ## Repository Notes
