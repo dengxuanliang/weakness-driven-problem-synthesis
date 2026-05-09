@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 from pathlib import Path
+from pydantic import ValidationError
 
 from weakness_driven_problem_synthesis.attribute import attribute_failures
 from weakness_driven_problem_synthesis.llm_client import (
@@ -9,7 +10,7 @@ from weakness_driven_problem_synthesis.llm_client import (
     build_provider_client,
     complete_json,
 )
-from weakness_driven_problem_synthesis.schemas import EvalRecord
+from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord
 
 
 class FakeProvider:
@@ -225,6 +226,42 @@ def test_missing_api_key_still_fails_when_env_and_dotenv_are_both_absent(monkeyp
 
     with pytest.raises(RuntimeError, match="Missing required environment variable: OPENAI_API_KEY"):
         build_provider_client(provider="openai", model=None)
+
+
+def test_attribution_schema_rejects_scalar_ability_dimensions_without_normalization():
+    with pytest.raises(ValidationError):
+        Attribution.model_validate(
+            {
+                "question_id": 1,
+                "is_truly_failed": True,
+                "error_tags": ["edge-case:null"],
+                "root_cause": "r",
+                "ability_dimensions": "generalization",
+                "evidence_snippet": "e",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_attribute_failures_normalizes_scalar_list_fields_from_model(tmp_path):
+    output_path = tmp_path / "error_attributions.jsonl"
+    client = FakeProvider(
+        outputs=[
+            '{"question_id": 1, "is_truly_failed": true, "error_tags": "edge-case:null", "root_cause": "missed null", "ability_dimensions": "generalization", "evidence_snippet": "value is None"}',
+        ]
+    )
+
+    result = await attribute_failures(
+        [make_eval_record(1, "first")],
+        output_path=output_path,
+        provider_client=client,
+        provider="openai",
+        model="test-model",
+        concurrency=1,
+    )
+
+    assert result[0].error_tags == ["edge-case:null"]
+    assert result[0].ability_dimensions == ["generalization"]
 
 
 def make_eval_record(question_id: int, content: str) -> EvalRecord:

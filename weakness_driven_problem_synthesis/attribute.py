@@ -48,6 +48,18 @@ def _truncate_test_text(text: str, *, max_chars: int = MAX_TEST_CHARS) -> str:
     return f"{text[:max_chars]}\n[truncated {omitted} chars]"
 
 
+def _normalize_attribution_payload(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized = dict(payload)
+    for field_name in ("error_tags", "ability_dimensions"):
+        value = normalized.get(field_name)
+        if isinstance(value, str):
+            normalized[field_name] = [value]
+    return normalized
+
+
 async def _attribute_record(
     record: EvalRecord,
     *,
@@ -78,7 +90,7 @@ async def _attribute_record(
         model=model,
         provider_client=provider_client,
     )
-    return Attribution.model_validate(payload)
+    return Attribution.model_validate(_normalize_attribution_payload(payload))
 
 
 async def attribute_failures(
