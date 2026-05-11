@@ -128,6 +128,22 @@ def _build_openai_messages(*, prompt: str, system: str | None) -> list[dict[str,
     return items
 
 
+def _extract_fenced_code_block(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return None
+
+    first_newline = stripped.find("\n")
+    if first_newline == -1:
+        return None
+
+    closing_index = stripped.rfind("\n```")
+    if closing_index <= first_newline:
+        return None
+
+    return stripped[first_newline + 1 : closing_index].strip()
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -163,6 +179,19 @@ def _resolve_model_name(provider: str, model: str | None) -> str:
     if env_model:
         return env_model
     raise RuntimeError(f"Missing required model configuration: {env_var}")
+
+
+def _parse_json_with_fence_fallback(raw_output: Any) -> dict | list[dict]:
+    if isinstance(raw_output, (dict, list)):
+        return raw_output
+
+    try:
+        return json.loads(raw_output)
+    except json.JSONDecodeError:
+        fenced = _extract_fenced_code_block(raw_output) if isinstance(raw_output, str) else None
+        if fenced is None:
+            raise
+        return json.loads(fenced)
 
 
 def build_provider_client(provider: str, model: str | None) -> ProviderClient:
@@ -228,10 +257,8 @@ async def complete_json(
             model=resolved_model,
         )
         last_raw_output = raw_output
-        if isinstance(raw_output, (dict, list)):
-            return raw_output
         try:
-            return json.loads(raw_output)
+            return _parse_json_with_fence_fallback(raw_output)
         except json.JSONDecodeError:
             if attempt == 2:
                 break

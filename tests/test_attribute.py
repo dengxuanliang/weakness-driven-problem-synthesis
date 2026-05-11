@@ -188,6 +188,35 @@ async def test_complete_json_includes_last_raw_output_preview_when_retries_exhau
         )
 
 
+@pytest.mark.asyncio
+async def test_complete_json_accepts_markdown_fenced_object_json():
+    client = FakeProvider(outputs=['```json\n{"ok": true}\n```'])
+    result = await complete_json(
+        "prompt",
+        {"type": "object"},
+        provider_client=client,
+        model="test-model",
+    )
+    assert result == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_complete_json_accepts_markdown_fenced_array_json():
+    client = FakeProvider(
+        outputs=[
+            '```\n[{"id":"W1","name":"n","description":"d","covered_tags":["t"],"dominant_language":"python","dominant_category":"algorithms"}]\n```'
+        ]
+    )
+    result = await complete_json(
+        "prompt",
+        {"type": "array"},
+        provider_client=client,
+        model="test-model",
+    )
+    assert isinstance(result, list)
+    assert result[0]["id"] == "W1"
+
+
 def test_missing_api_key_fails_fast(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
