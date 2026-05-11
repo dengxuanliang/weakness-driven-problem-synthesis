@@ -10,10 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_MODELS = {
-    "anthropic": "claude-opus-4-6",
-    "openai": "gpt-4o",
-}
+SUPPORTED_PROVIDERS = {"anthropic", "openai"}
 
 OPENAI_JSON_OBJECT_MODE = "json_object"
 OPENAI_PLAIN_TEXT_ARRAY_MODE = "plain_text_array"
@@ -154,8 +151,22 @@ def _load_env_file_if_needed(*, env_path: Path | None = None) -> None:
         os.environ[key] = value
 
 
+def _model_env_var_for_provider(provider: str) -> str:
+    return "ANTHROPIC_MODEL" if provider == "anthropic" else "OPENAI_MODEL"
+
+
+def _resolve_model_name(provider: str, model: str | None) -> str:
+    if model:
+        return model
+    env_var = _model_env_var_for_provider(provider)
+    env_model = os.getenv(env_var)
+    if env_model:
+        return env_model
+    raise RuntimeError(f"Missing required model configuration: {env_var}")
+
+
 def build_provider_client(provider: str, model: str | None) -> ProviderClient:
-    if provider not in DEFAULT_MODELS:
+    if provider not in SUPPORTED_PROVIDERS:
         raise RuntimeError(f"Unsupported provider: {provider}")
 
     _load_env_file_if_needed()
@@ -164,7 +175,7 @@ def build_provider_client(provider: str, model: str | None) -> ProviderClient:
     if not os.getenv(env_var):
         raise RuntimeError(f"Missing required environment variable: {env_var}")
 
-    resolved_model = model or DEFAULT_MODELS[provider]
+    resolved_model = _resolve_model_name(provider, model)
     if provider == "openai":
         try:
             from openai import AsyncOpenAI
@@ -203,7 +214,7 @@ async def complete_json(
     provider_client: Any | None = None,
 ) -> dict | list[dict]:
     client = provider_client or build_provider_client(provider=provider, model=model)
-    resolved_model = model or getattr(client, "model", DEFAULT_MODELS[provider])
+    resolved_model = model or getattr(client, "model", None) or _resolve_model_name(provider, model)
     repair_prompt = prompt
     last_raw_output: Any | None = None
 

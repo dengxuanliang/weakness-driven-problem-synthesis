@@ -13,7 +13,6 @@ def _build_solver_prompt(problem: dict) -> str:
     else:
         interface_label = "Function signature"
     return (
-        f"Solve this problem in {problem['language']}.\n\n"
         f"{problem['problem_statement']}\n\n"
         f"{interface_label}:\n{problem['function_signature']}\n\n"
         f"Input:\n{problem['input_format']}\n\n"

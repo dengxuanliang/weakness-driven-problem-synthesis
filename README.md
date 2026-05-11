@@ -102,12 +102,14 @@ For OpenAI-compatible gateways:
 ```bash
 export OPENAI_API_KEY=...
 export OPENAI_BASE_URL=...
+export OPENAI_MODEL=...
 ```
 
 For Anthropic:
 
 ```bash
 export ANTHROPIC_API_KEY=...
+export ANTHROPIC_MODEL=...
 ```
 
 Optional debug dump path:
@@ -117,6 +119,14 @@ export WEAKNESS_SYNTH_DEBUG_PATH=debug_invalid_json.txt
 ```
 
 The loader checks environment variables first. If a required value is missing, it falls back to the repository-root `.env` file. `.env` never overrides an already-set environment variable.
+
+Model selection priority is:
+
+1. `--model`
+2. provider-specific environment variable or repository-root `.env`
+3. error
+
+There is no built-in default model name.
 
 You can also store local secrets in `.env`, but that file must remain uncommitted.
 

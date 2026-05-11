@@ -1,5 +1,7 @@
 import pytest
 import asyncio
+import sys
+import types
 from pathlib import Path
 from pydantic import ValidationError
 
@@ -225,6 +227,69 @@ def test_missing_api_key_still_fails_when_env_and_dotenv_are_both_absent(monkeyp
     )
 
     with pytest.raises(RuntimeError, match="Missing required environment variable: OPENAI_API_KEY"):
+        build_provider_client(provider="openai", model=None)
+
+
+def test_explicit_model_overrides_environment_model(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("OPENAI_MODEL", "env-model")
+
+    calls = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key, base_url):
+            calls["api_key"] = api_key
+            calls["base_url"] = base_url
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    client = build_provider_client(provider="openai", model="cli-model")
+    assert client.model == "cli-model"
+
+
+def test_model_name_uses_environment_when_cli_model_missing(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("OPENAI_MODEL", "env-model")
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key, base_url):
+            pass
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    client = build_provider_client(provider="openai", model=None)
+    assert client.model == "env-model"
+
+
+def test_model_name_uses_dotenv_as_fallback(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_MODEL=dotenv-model\n")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.setattr(
+        "weakness_driven_problem_synthesis.llm_client._repo_root",
+        lambda: tmp_path,
+    )
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key, base_url):
+            pass
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    client = build_provider_client(provider="openai", model=None)
+    assert client.model == "dotenv-model"
+
+
+def test_missing_model_name_fails_when_cli_env_and_dotenv_are_all_absent(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.setattr(
+        "weakness_driven_problem_synthesis.llm_client._repo_root",
+        lambda: tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="Missing required model configuration: OPENAI_MODEL"):
         build_provider_client(provider="openai", model=None)
 
 

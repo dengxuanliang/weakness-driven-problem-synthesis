@@ -47,10 +47,20 @@ Expected environment variables:
 
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL` for OpenAI-compatible gateways
+- `OPENAI_MODEL`
 - `ANTHROPIC_API_KEY`
+- `ANTHROPIC_MODEL`
 - `WEAKNESS_SYNTH_DEBUG_PATH` for optional invalid-JSON dumps
 
 Environment variables take priority. If a required value is missing, the loader falls back to the repository-root `.env` file. `.env` never overrides an already-set environment variable.
+
+Model selection priority is:
+
+1. `--model`
+2. provider-specific environment variable or repository-root `.env`
+3. error
+
+There is no built-in default model name.
 
 Local secrets may be stored in `.env`, but `.env` must never be committed.
 

@@ -48,7 +48,6 @@ def test_write_solver_view_exports_only_solver_fields_and_prompt(tmp_path):
         "solver_prompt",
     }
     assert record["solver_prompt"] == (
-        "Solve this problem in python.\n\n"
         "Solve a batch processing problem.\n\n"
         "Function signature:\n"
         "def solve(items: list[int]) -> int:\n\n"
