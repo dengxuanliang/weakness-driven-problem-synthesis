@@ -12,14 +12,16 @@ from pathlib import Path
 from weakness_driven_problem_synthesis.allocate import allocate_quotas
 from weakness_driven_problem_synthesis.attribute import attribute_failures
 from weakness_driven_problem_synthesis.cluster import cluster_weaknesses
-from weakness_driven_problem_synthesis.load_filter import load_failed_records
+from weakness_driven_problem_synthesis.load_filter import FailedRecordCandidate, load_failed_record_candidates
 from weakness_driven_problem_synthesis.report import write_report
 from weakness_driven_problem_synthesis.schemas import SynthesisSummary, WeaknessSet
 from weakness_driven_problem_synthesis.solver_view import write_solver_view
 from weakness_driven_problem_synthesis.synthesize import synthesize_for_weaknesses
 
+MAX_FAILED_RECORD_BYTES = 1_000_000
 STAGE_ARTIFACTS = (
     "error_attributions.jsonl",
+    "skipped_failed_records.jsonl",
     "weaknesses.json",
     "synthesized_problems.jsonl",
     "solver_view.jsonl",
@@ -61,11 +63,43 @@ def _write_empty_report(*, report_path: Path, failed_count: int) -> None:
     write_report(
         report_path=report_path,
         failed_count=failed_count,
+        failed_records_skipped_before_attribution=0,
         weakness_set=_empty_weakness_set(),
         allocations={},
         synthesis_summary=_empty_synthesis_summary(),
         sampled_problems={},
     )
+
+
+def _partition_failed_records_by_size(
+    candidates: list[FailedRecordCandidate],
+    *,
+    max_record_bytes: int,
+) -> tuple[list, list[dict[str, object]]]:
+    eligible_records = []
+    skipped_records = []
+    for candidate in candidates:
+        if candidate.raw_size_bytes > max_record_bytes:
+            skipped_records.append(
+                {
+                    "question_id": candidate.record.question_id,
+                    "reason": "record_too_large",
+                    "record_size_bytes": candidate.raw_size_bytes,
+                }
+            )
+            continue
+        eligible_records.append(candidate.record)
+    return eligible_records, skipped_records
+
+
+def _write_skipped_failed_records(*, output_path: Path, skipped_records: list[dict[str, object]]) -> None:
+    if not skipped_records:
+        if output_path.exists():
+            output_path.unlink()
+        return
+    with output_path.open("w") as handle:
+        for item in skipped_records:
+            handle.write(json.dumps(item) + "\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,7 +146,14 @@ def should_continue_after_estimate(*, non_interactive: bool = False) -> bool:
 async def main_with_args(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     output_dir = prepare_output_dir(Path(args.output_dir), restart=args.restart, resume=args.resume)
-    failed_records = list(load_failed_records(Path(args.eval_log)))
+    failed_candidates = list(load_failed_record_candidates(Path(args.eval_log)))
+    failed_records, skipped_failed_records = _partition_failed_records_by_size(
+        failed_candidates,
+        max_record_bytes=MAX_FAILED_RECORD_BYTES,
+    )
+    skipped_failed_records_path = output_dir / "skipped_failed_records.jsonl"
+    _write_skipped_failed_records(output_path=skipped_failed_records_path, skipped_records=skipped_failed_records)
+    failed_count = len(failed_candidates)
     estimates = estimate_call_counts(failed_count=len(failed_records), total_questions=args.total_questions)
     print(
         "Pre-flight estimate: "
@@ -126,7 +167,15 @@ async def main_with_args(argv: list[str]) -> int:
     if not failed_records:
         _clear_stale_outputs_for_empty_run(output_dir=output_dir)
         _write_empty_weaknesses_artifact(output_path=output_dir / "weaknesses.json")
-        _write_empty_report(report_path=report_path, failed_count=0)
+        write_report(
+            report_path=report_path,
+            failed_count=failed_count,
+            failed_records_skipped_before_attribution=len(skipped_failed_records),
+            weakness_set=_empty_weakness_set(),
+            allocations={},
+            synthesis_summary=_empty_synthesis_summary(),
+            sampled_problems={},
+        )
         return 0
 
     error_attributions = await attribute_failures(
@@ -140,7 +189,15 @@ async def main_with_args(argv: list[str]) -> int:
     if not truly_failed_attributions:
         _clear_stale_outputs_for_empty_run(output_dir=output_dir)
         _write_empty_weaknesses_artifact(output_path=output_dir / "weaknesses.json")
-        _write_empty_report(report_path=report_path, failed_count=len(failed_records))
+        write_report(
+            report_path=report_path,
+            failed_count=failed_count,
+            failed_records_skipped_before_attribution=len(skipped_failed_records),
+            weakness_set=_empty_weakness_set(),
+            allocations={},
+            synthesis_summary=_empty_synthesis_summary(),
+            sampled_problems={},
+        )
         return 0
 
     weakness_set = await cluster_weaknesses(
@@ -176,7 +233,8 @@ async def main_with_args(argv: list[str]) -> int:
                     sampled.setdefault(item["weakness_id"], item["problem_statement"][:200])
     write_report(
         report_path=report_path,
-        failed_count=len(failed_records),
+        failed_count=failed_count,
+        failed_records_skipped_before_attribution=len(skipped_failed_records),
         weakness_set=weakness_set,
         allocations=allocations,
         synthesis_summary=synthesis_summary,
