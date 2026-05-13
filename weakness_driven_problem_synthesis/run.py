@@ -21,6 +21,7 @@ from weakness_driven_problem_synthesis.synthesize import synthesize_for_weakness
 MAX_FAILED_RECORD_BYTES = 1_000_000
 STAGE_ARTIFACTS = (
     "error_attributions.jsonl",
+    "failed_attribution_records.jsonl",
     "skipped_failed_records.jsonl",
     "weaknesses.json",
     "synthesized_problems.jsonl",
@@ -181,6 +182,7 @@ async def main_with_args(argv: list[str]) -> int:
     error_attributions = await attribute_failures(
         failed_records,
         output_path=output_dir / "error_attributions.jsonl",
+        failed_output_path=output_dir / "failed_attribution_records.jsonl",
         provider=args.provider,
         model=args.model,
         concurrency=args.concurrency,

@@ -710,8 +710,52 @@ async def test_attribute_failures_truncates_oversized_test_payload_in_prompt(tmp
     prompt = client.calls[0]["prompt"]
     assert "Test:\n" in prompt
     assert "[truncated " in prompt
-    assert " chars]" in prompt
+    assert " chars from test]" in prompt
     assert len(prompt) < 100_000
+
+
+@pytest.mark.asyncio
+async def test_attribute_failures_truncates_large_core_fields_and_caps_prompt_size(tmp_path):
+    output_path = tmp_path / "error_attributions.jsonl"
+    failed_output_path = tmp_path / "failed_attribution_records.jsonl"
+    client = FakeProvider(
+        outputs=[
+            '{"question_id": 10, "is_truly_failed": true, "error_tags": ["tag:10"], "root_cause": "r10", "ability_dimensions": ["a10"], "evidence_snippet": "e10"}',
+        ]
+    )
+    record = EvalRecord.model_validate(
+        {
+            "question_id": 10,
+            "content": "C" * 50_000,
+            "canonical_solution": "S" * 50_000,
+            "completion": "M" * 50_000,
+            "test": "T" * 50_000,
+            "labels": {
+                "category": "algorithms",
+                "programming_language": "python",
+                "difficulty": "hard",
+            },
+            "pass_at_1": 0,
+        }
+    )
+
+    await attribute_failures(
+        [record],
+        output_path=output_path,
+        failed_output_path=failed_output_path,
+        provider_client=client,
+        provider="openai",
+        model="test-model",
+        concurrency=1,
+    )
+
+    prompt = client.calls[0]["prompt"]
+    assert "[truncated " in prompt
+    assert "from content" in prompt
+    assert "from canonical_solution" in prompt
+    assert "from completion" in prompt
+    assert "from test" in prompt
+    assert len(prompt) <= 25_000
 
 
 @pytest.mark.asyncio
@@ -810,3 +854,97 @@ async def test_attribute_failures_merges_all_completed_tags_before_refilling_con
     assert "tag:2" in prompt_by_id[3]
 
     await task
+
+
+class FailingOnceProvider:
+    def __init__(self):
+        self.calls = []
+
+    async def complete_json(self, *, prompt, schema, system, max_tokens, model):
+        question_id_line = next(line for line in prompt.splitlines() if line.startswith("Question ID:"))
+        question_id = int(question_id_line.split(":", 1)[1].strip())
+        self.calls.append(question_id)
+        if question_id == 1:
+            raise RuntimeError("simulated attribution failure")
+        return {
+            "question_id": question_id,
+            "is_truly_failed": True,
+            "error_tags": [f"tag:{question_id}"],
+            "root_cause": f"root {question_id}",
+            "ability_dimensions": [f"ability {question_id}"],
+            "evidence_snippet": f"evidence {question_id}",
+        }
+
+
+@pytest.mark.asyncio
+async def test_attribute_failures_skips_failed_record_and_continues(tmp_path):
+    output_path = tmp_path / "error_attributions.jsonl"
+    failed_output_path = tmp_path / "failed_attribution_records.jsonl"
+    client = FailingOnceProvider()
+
+    result = await attribute_failures(
+        [make_eval_record(1, "first"), make_eval_record(2, "second"), make_eval_record(3, "third")],
+        output_path=output_path,
+        failed_output_path=failed_output_path,
+        provider_client=client,
+        provider="openai",
+        model="test-model",
+        concurrency=2,
+    )
+
+    assert [item.question_id for item in result] == [2, 3]
+    assert output_path.read_text().count("\n") == 2
+    failed_lines = failed_output_path.read_text().strip().splitlines()
+    assert len(failed_lines) == 1
+    assert '"question_id": 1' in failed_lines[0]
+    assert "simulated attribution failure" in failed_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_attribute_failures_writes_failed_records_metadata(tmp_path):
+    output_path = tmp_path / "error_attributions.jsonl"
+    failed_output_path = tmp_path / "failed_attribution_records.jsonl"
+    client = FailingOnceProvider()
+
+    await attribute_failures(
+        [make_eval_record(1, "first")],
+        output_path=output_path,
+        failed_output_path=failed_output_path,
+        provider_client=client,
+        provider="openai",
+        model="test-model",
+        concurrency=1,
+    )
+
+    payload = failed_output_path.read_text()
+    assert '"question_id": 1' in payload
+    assert '"error_type": "RuntimeError"' in payload
+    assert '"error_message": "simulated attribution failure"' in payload
+    assert '"content_chars":' in payload
+    assert '"canonical_solution_chars":' in payload
+    assert '"completion_chars":' in payload
+    assert '"test_chars":' in payload
+
+
+@pytest.mark.asyncio
+async def test_attribute_failures_all_fail_without_raising(tmp_path):
+    output_path = tmp_path / "error_attributions.jsonl"
+    failed_output_path = tmp_path / "failed_attribution_records.jsonl"
+
+    class AlwaysFailProvider:
+        async def complete_json(self, *, prompt, schema, system, max_tokens, model):
+            raise RuntimeError("always fail")
+
+    result = await attribute_failures(
+        [make_eval_record(1, "first"), make_eval_record(2, "second")],
+        output_path=output_path,
+        failed_output_path=failed_output_path,
+        provider_client=AlwaysFailProvider(),
+        provider="openai",
+        model="test-model",
+        concurrency=2,
+    )
+
+    assert result == []
+    assert not output_path.exists() or output_path.read_text() == ""
+    assert len(failed_output_path.read_text().strip().splitlines()) == 2
