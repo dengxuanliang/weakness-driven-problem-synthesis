@@ -173,6 +173,39 @@ def _load_env_file_if_needed(*, env_path: Path | None = None) -> dict[str, str]:
     return loaded
 
 
+def _resolve_config_value(*, key: str, config: dict[str, str]) -> str | None:
+    env_value = os.getenv(key)
+    if env_value:
+        return env_value
+    return config.get(key)
+
+
+def _resolve_proxy_url(config: dict[str, str]) -> str | None:
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        value = os.getenv(key)
+        if value:
+            return value
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        value = config.get(key)
+        if value:
+            return value
+    return None
+
+
+def _build_optional_httpx_client(config: dict[str, str]) -> Any | None:
+    proxy_url = _resolve_proxy_url(config)
+    if not proxy_url:
+        return None
+
+    import httpx
+
+    return httpx.AsyncClient(
+        proxy=proxy_url,
+        timeout=httpx.Timeout(120.0),
+        trust_env=False,
+    )
+
+
 def _model_env_var_for_provider(provider: str) -> str:
     return "ANTHROPIC_MODEL" if provider == "anthropic" else "OPENAI_MODEL"
 
@@ -181,10 +214,10 @@ def _resolve_model_name(provider: str, model: str | None, *, config: dict[str, s
     if model:
         return model
     env_var = _model_env_var_for_provider(provider)
-    env_model = config.get(env_var)
+    env_model = _resolve_config_value(key=env_var, config=config)
     if env_model:
         return env_model
-    raise RuntimeError(f"Missing required config in .env: {env_var}")
+    raise RuntimeError(f"Missing required model configuration: {env_var}")
 
 
 def _parse_json_with_fence_fallback(raw_output: Any) -> dict | list[dict]:
@@ -207,23 +240,29 @@ def build_provider_client(provider: str, model: str | None) -> ProviderClient:
     config = _load_env_file_if_needed()
 
     env_var = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
-    if not config.get(env_var):
-        raise RuntimeError(f"Missing required config in .env: {env_var}")
+    api_key = _resolve_config_value(key=env_var, config=config)
+    if not api_key:
+        raise RuntimeError(f"Missing required environment variable: {env_var}")
 
     resolved_model = _resolve_model_name(provider, model, config=config)
+    http_client = _build_optional_httpx_client(config)
     if provider == "openai":
         try:
             from openai import AsyncOpenAI
         except ImportError as exc:
             raise RuntimeError("openai package is required for provider=openai") from exc
 
+        openai_kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": _resolve_config_value(key="OPENAI_BASE_URL", config=config),
+        }
+        if http_client is not None:
+            openai_kwargs["http_client"] = http_client
+
         return OpenAIProviderClient(
             provider=provider,
             model=resolved_model,
-            client=AsyncOpenAI(
-                api_key=config.get("OPENAI_API_KEY"),
-                base_url=config.get("OPENAI_BASE_URL"),
-            ),
+            client=AsyncOpenAI(**openai_kwargs),
         )
 
     try:
@@ -231,10 +270,17 @@ def build_provider_client(provider: str, model: str | None) -> ProviderClient:
     except ImportError as exc:
         raise RuntimeError("anthropic package is required for provider=anthropic") from exc
 
+    anthropic_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": _resolve_config_value(key="ANTHROPIC_BASE_URL", config=config),
+    }
+    if http_client is not None:
+        anthropic_kwargs["http_client"] = http_client
+
     return AnthropicProviderClient(
         provider=provider,
         model=resolved_model,
-        client=AsyncAnthropic(api_key=config.get("ANTHROPIC_API_KEY")),
+        client=AsyncAnthropic(**anthropic_kwargs),
     )
 
 

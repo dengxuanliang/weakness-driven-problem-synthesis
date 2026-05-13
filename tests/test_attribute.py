@@ -2,6 +2,7 @@ import pytest
 import asyncio
 import sys
 import types
+import httpx
 from pathlib import Path
 from pydantic import ValidationError
 
@@ -237,11 +238,11 @@ def test_load_env_file_if_needed_reads_from_project_dotenv(monkeypatch, tmp_path
     assert config["OPENAI_MODEL"] == "dotenv-model"
 
 
-def test_missing_api_key_still_fails_when_project_dotenv_is_absent(monkeypatch, tmp_path):
+def test_missing_api_key_still_fails_when_env_and_project_dotenv_are_both_absent(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-    with pytest.raises(RuntimeError, match="Missing required config in .env: OPENAI_API_KEY"):
+    with pytest.raises(RuntimeError, match="Missing required environment variable: OPENAI_API_KEY"):
         build_provider_client(provider="openai", model=None)
 
 
@@ -249,6 +250,8 @@ def test_explicit_model_overrides_project_dotenv_model(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_BASE_URL=https://dotenv.example\nOPENAI_MODEL=dotenv-model\n")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
 
     calls = {}
 
@@ -269,6 +272,7 @@ def test_model_name_uses_project_dotenv_when_cli_model_missing(monkeypatch, tmp_
     env_path = tmp_path / ".env"
     env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_BASE_URL=https://dotenv.example\nOPENAI_MODEL=dotenv-model\n")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
     class FakeAsyncOpenAI:
         def __init__(self, *, api_key, base_url):
@@ -295,7 +299,7 @@ def test_model_name_uses_project_cwd_dotenv(monkeypatch, tmp_path):
     assert client.model == "dotenv-model"
 
 
-def test_project_dotenv_ignores_same_named_shell_environment(monkeypatch, tmp_path):
+def test_environment_overrides_project_dotenv(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_MODEL=dotenv-model\nOPENAI_BASE_URL=https://dotenv.example\n")
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
@@ -313,18 +317,97 @@ def test_project_dotenv_ignores_same_named_shell_environment(monkeypatch, tmp_pa
     monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
 
     client = build_provider_client(provider="openai", model=None)
-    assert client.model == "dotenv-model"
-    assert calls["api_key"] == "dotenv-key"
-    assert calls["base_url"] == "https://dotenv.example"
+    assert client.model == "env-model"
+    assert calls["api_key"] == "env-key"
+    assert calls["base_url"] == "https://env.example"
 
 
-def test_missing_model_name_fails_when_project_dotenv_missing_field(monkeypatch, tmp_path):
+def test_missing_model_name_fails_when_cli_env_and_project_dotenv_are_all_absent(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
     env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_BASE_URL=https://dotenv.example\n")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
-    with pytest.raises(RuntimeError, match="Missing required config in .env: OPENAI_MODEL"):
+    with pytest.raises(RuntimeError, match="Missing required model configuration: OPENAI_MODEL"):
         build_provider_client(provider="openai", model=None)
+
+
+def test_openai_client_does_not_inject_http_client_without_proxy(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_BASE_URL=https://dotenv.example\nOPENAI_MODEL=dotenv-model\n")
+    monkeypatch.chdir(tmp_path)
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+    calls = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    build_provider_client(provider="openai", model=None)
+    assert "http_client" not in calls
+
+
+def test_openai_client_injects_http_client_from_environment_proxy(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_BASE_URL=https://dotenv.example\nOPENAI_MODEL=dotenv-model\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+
+    calls = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    build_provider_client(provider="openai", model=None)
+    assert isinstance(calls["http_client"], httpx.AsyncClient)
+
+
+def test_openai_client_injects_http_client_from_project_dotenv_proxy(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "OPENAI_API_KEY=dotenv-key\n"
+        "OPENAI_BASE_URL=https://dotenv.example\n"
+        "OPENAI_MODEL=dotenv-model\n"
+        "HTTP_PROXY=http://127.0.0.1:7890\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+
+    calls = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    build_provider_client(provider="openai", model=None)
+    assert isinstance(calls["http_client"], httpx.AsyncClient)
+
+
+def test_anthropic_client_injects_http_client_from_environment_proxy(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("ANTHROPIC_API_KEY=dotenv-key\nANTHROPIC_MODEL=dotenv-model\nANTHROPIC_BASE_URL=https://anthropic.example\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+
+    calls = {}
+
+    class FakeAsyncAnthropic:
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(AsyncAnthropic=FakeAsyncAnthropic))
+
+    build_provider_client(provider="anthropic", model=None)
+    assert isinstance(calls["http_client"], httpx.AsyncClient)
 
 
 def test_attribution_schema_rejects_scalar_ability_dimensions_without_normalization():
