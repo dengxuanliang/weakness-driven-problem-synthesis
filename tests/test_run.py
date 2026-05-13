@@ -29,6 +29,24 @@ def test_cli_parses_expected_arguments():
     assert args.eval_log == "eval.jsonl"
     assert args.total_questions == 500
     assert args.resume is True
+    assert args.start_stage == "attribute"
+
+
+def test_cli_parses_cluster_start_stage_arguments():
+    args = build_parser().parse_args(
+        [
+            "--eval-log",
+            "eval.jsonl",
+            "--total-questions",
+            "5",
+            "--start-stage",
+            "cluster",
+            "--attributions-file",
+            "error_attributions.jsonl",
+        ]
+    )
+    assert args.start_stage == "cluster"
+    assert args.attributions_file == "error_attributions.jsonl"
 
 
 def test_restart_deletes_stage_artifacts(tmp_path):
@@ -75,6 +93,12 @@ def test_estimate_call_counts_reports_zero_synthesis_batches_when_no_failures():
     estimates = estimate_call_counts(failed_count=0, total_questions=50, batch_size=10)
     assert estimates["attribution_calls"] == 0
     assert estimates["synthesis_batches"] == 0
+
+
+def test_estimate_call_counts_reports_zero_attribution_calls_when_starting_from_cluster():
+    estimates = estimate_call_counts(failed_count=23, total_questions=27, batch_size=10, start_stage="cluster")
+    assert estimates["attribution_calls"] == 0
+    assert estimates["synthesis_batches"] == 3
 
 
 def test_validate_allocations_rejects_negative_or_mismatched_totals():
@@ -489,6 +513,96 @@ async def test_pipeline_writes_empty_report_when_all_failed_records_are_oversize
     assert "Failed records skipped before attribution: 1" in report_text
     assert "Weaknesses: 0" in report_text
     assert "Synthesized problems: 0" in report_text
+
+
+@pytest.mark.asyncio
+async def test_cluster_start_stage_requires_attributions_file(tmp_path):
+    eval_log = tmp_path / "eval.jsonl"
+    eval_log.write_text(
+        '{"question_id":1,"content":"a","canonical_solution":"x","completion":"y","test":"t","labels":{"category":"c","programming_language":"python","difficulty":"hard"},"pass_at_1":0}\n'
+    )
+
+    with pytest.raises(ValueError, match="--attributions-file is required when --start-stage=cluster"):
+        await main_with_args(
+            [
+                "--eval-log",
+                str(eval_log),
+                "--total-questions",
+                "1",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--start-stage",
+                "cluster",
+                "--yes",
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_cluster_start_stage_skips_attribution_and_uses_existing_attributions(tmp_path, monkeypatch):
+    eval_log = tmp_path / "eval.jsonl"
+    attributions_path = tmp_path / "error_attributions.jsonl"
+    output_dir = tmp_path / "out"
+    eval_log.write_text(
+        '{"question_id":1,"content":"a","canonical_solution":"x","completion":"y","test":"t","labels":{"category":"algorithms","programming_language":"python","difficulty":"hard"},"pass_at_1":0}\n'
+        '{"question_id":2,"content":"b","canonical_solution":"x","completion":"y","test":"t","labels":{"category":"algorithms","programming_language":"python","difficulty":"hard"},"pass_at_1":0}\n'
+    )
+    attributions_path.write_text(
+        '{"question_id":1,"is_truly_failed":true,"error_tags":["recursion:base-case-missing"],"root_cause":"missed base case","ability_dimensions":["reasoning"],"evidence_snippet":"if n == 0"}\n'
+        '{"question_id":2,"is_truly_failed":false,"error_tags":["judge:false-positive"],"root_cause":"equivalent answer","ability_dimensions":["reasoning"],"evidence_snippet":"return ans"}\n'
+    )
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("attribute_failures should not run when --start-stage=cluster")
+
+    async def fake_cluster_weaknesses(attributions, **kwargs):
+        assert [item.question_id for item in attributions] == [1]
+        return WeaknessSet(
+            weaknesses=[
+                Weakness(
+                    id="W001",
+                    name="Recursion termination",
+                    description="recursion bugs",
+                    covered_tags=["recursion:base-case-missing"],
+                    dominant_language="python",
+                    dominant_category="algorithms",
+                )
+            ],
+            evidence_question_ids={"W001": [1]},
+        )
+
+    async def fake_synthesize_for_weaknesses(*args, **kwargs):
+        output_path = kwargs["output_path"]
+        output_path.write_text(
+            '{"id":"S00001","weakness_id":"W001","batch_index":0,"language":"python","difficulty":"hard","scenario":"demo","problem_statement":"'
+            + ("x" * 240)
+            + '","function_signature":"def solve(x: list[int]) -> int:","input_format":"list[int]","output_format":"int","constraints":["1 <= n <= 1e5"],"edge_cases_hinted":["empty input"],"anti_homogeneity_notes":"demo","input_scale_class":"scale-a","data_shape_class":"shape-a","primary_pitfall":"pitfall-a","novelty_reason":"novelty-a"}\n'
+        )
+        return SynthesisSummary(completed=1, retry_count=0, dropped=0)
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.attribute_failures", fail_if_called)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.cluster_weaknesses", fake_cluster_weaknesses)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.synthesize_for_weaknesses", fake_synthesize_for_weaknesses)
+
+    exit_code = await main_with_args(
+        [
+            "--eval-log",
+            str(eval_log),
+            "--total-questions",
+            "1",
+            "--output-dir",
+            str(output_dir),
+            "--start-stage",
+            "cluster",
+            "--attributions-file",
+            str(attributions_path),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 0
+    assert (output_dir / "report.md").exists()
+    assert (output_dir / "solver_view.jsonl").exists()
 
 
 def test_module_cli_entrypoint_executes_and_prints_help():

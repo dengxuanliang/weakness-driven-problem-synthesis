@@ -14,7 +14,7 @@ from weakness_driven_problem_synthesis.attribute import attribute_failures
 from weakness_driven_problem_synthesis.cluster import cluster_weaknesses
 from weakness_driven_problem_synthesis.load_filter import FailedRecordCandidate, load_failed_record_candidates
 from weakness_driven_problem_synthesis.report import write_report
-from weakness_driven_problem_synthesis.schemas import SynthesisSummary, WeaknessSet
+from weakness_driven_problem_synthesis.schemas import Attribution, SynthesisSummary, WeaknessSet
 from weakness_driven_problem_synthesis.solver_view import write_solver_view
 from weakness_driven_problem_synthesis.synthesize import synthesize_for_weaknesses
 
@@ -103,6 +103,29 @@ def _write_skipped_failed_records(*, output_path: Path, skipped_records: list[di
             handle.write(json.dumps(item) + "\n")
 
 
+def _load_attributions_jsonl(*, path: Path) -> list[Attribution]:
+    if not path.exists():
+        raise ValueError(f"attributions file does not exist: {path}")
+
+    attributions: list[Attribution] = []
+    with path.open() as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            if not raw_line.strip():
+                continue
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid attribution JSONL at line {line_number}: {exc.msg}") from exc
+            try:
+                attributions.append(Attribution.model_validate(payload))
+            except Exception as exc:
+                raise ValueError(f"invalid attribution record at line {line_number}: {exc}") from exc
+
+    if not attributions:
+        raise ValueError(f"attributions file is empty: {path}")
+    return attributions
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-log", required=True)
@@ -111,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider", default="anthropic")
     parser.add_argument("--model")
     parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--start-stage", choices=("attribute", "cluster"), default="attribute")
+    parser.add_argument("--attributions-file")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--restart", action="store_true")
     parser.add_argument("--yes", action="store_true")
@@ -129,10 +154,16 @@ def prepare_output_dir(output_dir: Path, *, restart: bool, resume: bool = True) 
     return output_dir
 
 
-def estimate_call_counts(*, failed_count: int, total_questions: int, batch_size: int = 10) -> dict[str, int]:
+def estimate_call_counts(
+    *,
+    failed_count: int,
+    total_questions: int,
+    batch_size: int = 10,
+    start_stage: str = "attribute",
+) -> dict[str, int]:
     synthesis_batches = 0 if failed_count <= 0 else (total_questions + batch_size - 1) // batch_size
     return {
-        "attribution_calls": failed_count,
+        "attribution_calls": 0 if start_stage == "cluster" else failed_count,
         "synthesis_batches": synthesis_batches,
     }
 
@@ -146,6 +177,9 @@ def should_continue_after_estimate(*, non_interactive: bool = False) -> bool:
 
 async def main_with_args(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.start_stage == "cluster" and not args.attributions_file:
+        raise ValueError("--attributions-file is required when --start-stage=cluster")
+
     output_dir = prepare_output_dir(Path(args.output_dir), restart=args.restart, resume=args.resume)
     failed_candidates = list(load_failed_record_candidates(Path(args.eval_log)))
     failed_records, skipped_failed_records = _partition_failed_records_by_size(
@@ -155,7 +189,11 @@ async def main_with_args(argv: list[str]) -> int:
     skipped_failed_records_path = output_dir / "skipped_failed_records.jsonl"
     _write_skipped_failed_records(output_path=skipped_failed_records_path, skipped_records=skipped_failed_records)
     failed_count = len(failed_candidates)
-    estimates = estimate_call_counts(failed_count=len(failed_records), total_questions=args.total_questions)
+    estimates = estimate_call_counts(
+        failed_count=len(failed_records),
+        total_questions=args.total_questions,
+        start_stage=args.start_stage,
+    )
     print(
         "Pre-flight estimate: "
         f"{estimates['attribution_calls']} attribution calls, "
@@ -179,14 +217,17 @@ async def main_with_args(argv: list[str]) -> int:
         )
         return 0
 
-    error_attributions = await attribute_failures(
-        failed_records,
-        output_path=output_dir / "error_attributions.jsonl",
-        failed_output_path=output_dir / "failed_attribution_records.jsonl",
-        provider=args.provider,
-        model=args.model,
-        concurrency=args.concurrency,
-    )
+    if args.start_stage == "cluster":
+        error_attributions = _load_attributions_jsonl(path=Path(args.attributions_file))
+    else:
+        error_attributions = await attribute_failures(
+            failed_records,
+            output_path=output_dir / "error_attributions.jsonl",
+            failed_output_path=output_dir / "failed_attribution_records.jsonl",
+            provider=args.provider,
+            model=args.model,
+            concurrency=args.concurrency,
+        )
     truly_failed_attributions = [item for item in error_attributions if item.is_truly_failed]
     if not truly_failed_attributions:
         _clear_stale_outputs_for_empty_run(output_dir=output_dir)
