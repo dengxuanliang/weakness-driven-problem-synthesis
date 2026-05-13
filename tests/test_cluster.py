@@ -281,6 +281,35 @@ async def test_cluster_weaknesses_chunks_large_inputs_and_keeps_each_prompt_unde
 
 
 @pytest.mark.asyncio
+async def test_cluster_weaknesses_includes_covered_tags_in_merge_prompt_under_budget(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    tag_prefix = "t" * 7_000
+    attributions = [make_attribution(index, [f"{tag_prefix}:{index}"]) for index in range(1, 7)]
+    eval_records = [make_eval_record(index, "small case") for index in range(1, 7)]
+    client = FakeProvider(
+        outputs=[
+            f'[{{"id":"WA","name":"Chunk A","description":"d","covered_tags":["{tag_prefix}:1","{tag_prefix}:2","{tag_prefix}:3"],"dominant_language":"python","dominant_category":"algorithms"}}]',
+            f'[{{"id":"WB","name":"Chunk B","description":"d","covered_tags":["{tag_prefix}:4","{tag_prefix}:5","{tag_prefix}:6"],"dominant_language":"python","dominant_category":"algorithms"}}]',
+            f'[{{"id":"W999","name":"Merged weakness","description":"merged","covered_tags":["{tag_prefix}:1","{tag_prefix}:2","{tag_prefix}:3","{tag_prefix}:4","{tag_prefix}:5","{tag_prefix}:6"],"dominant_language":"python","dominant_category":"algorithms"}}]',
+        ]
+    )
+
+    await cluster_weaknesses(
+        attributions,
+        eval_records=eval_records,
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    merge_prompt = client.calls[-1]["prompt"]
+    assert '"covered_tags"' in merge_prompt
+    assert f"{tag_prefix}:1" in merge_prompt
+    assert len(merge_prompt) <= CLUSTER_PROMPT_MAX_CHARS
+
+
+@pytest.mark.asyncio
 async def test_cluster_weaknesses_fails_fast_when_single_block_exceeds_budget(tmp_path):
     output_path = tmp_path / "weaknesses.json"
     huge_tag = "t" * 30_000

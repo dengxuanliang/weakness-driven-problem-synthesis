@@ -11,6 +11,8 @@ from weakness_driven_problem_synthesis.prompts import load_prompt
 from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord, Weakness, WeaknessSet
 
 CLUSTER_PROMPT_MAX_CHARS = 25_000
+MERGE_BLOCK_MAX_TAGS = 8
+MERGE_BLOCK_MAX_TAG_CHARS = 8_000
 
 
 def _expect_array_payload(payload: Any, *, stage: str) -> list[dict[str, Any]]:
@@ -90,6 +92,25 @@ async def _cluster_chunk(
     return [Weakness.model_validate(item) for item in weaknesses_payload]
 
 
+def _compact_tags_for_merge(tags: list[str], *, max_tags: int, max_chars: int) -> list[str]:
+    compacted: list[str] = []
+    seen: set[str] = set()
+    total_chars = 0
+    for tag in tags:
+        if tag in seen:
+            continue
+        candidate_chars = total_chars + len(tag)
+        if compacted and (len(compacted) >= max_tags or candidate_chars > max_chars):
+            break
+        if not compacted and len(tag) > max_chars:
+            compacted.append(tag[:max_chars])
+            break
+        compacted.append(tag)
+        seen.add(tag)
+        total_chars = candidate_chars
+    return compacted
+
+
 def _render_weakness_merge_blocks(weaknesses: list[Weakness]) -> list[str]:
     blocks = []
     for weakness in weaknesses:
@@ -99,6 +120,11 @@ def _render_weakness_merge_blocks(weaknesses: list[Weakness]) -> list[str]:
                 {
                     "name": weakness.name,
                     "description": weakness.description,
+                    "covered_tags": _compact_tags_for_merge(
+                        weakness.covered_tags,
+                        max_tags=MERGE_BLOCK_MAX_TAGS,
+                        max_chars=MERGE_BLOCK_MAX_TAG_CHARS,
+                    ),
                     "dominant_language": weakness.dominant_language,
                     "dominant_category": weakness.dominant_category,
                 },
