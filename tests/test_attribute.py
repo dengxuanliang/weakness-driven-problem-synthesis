@@ -223,45 +223,32 @@ def test_missing_api_key_fails_fast(monkeypatch):
         build_provider_client(provider="openai", model=None)
 
 
-def test_load_env_file_if_needed_does_not_override_existing_environment(monkeypatch, tmp_path):
+def test_load_env_file_if_needed_reads_from_project_dotenv(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
-    env_path.write_text("OPENAI_API_KEY=from_dotenv\nOPENAI_BASE_URL=https://dotenv.example\n")
-    monkeypatch.setenv("OPENAI_API_KEY", "from_env")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-
-    _load_env_file_if_needed(env_path=env_path)
-
-    assert Path(env_path).exists()
-    assert __import__("os").environ["OPENAI_API_KEY"] == "from_env"
-    assert __import__("os").environ["OPENAI_BASE_URL"] == "https://dotenv.example"
-
-
-def test_load_env_file_if_needed_uses_dotenv_as_fallback(monkeypatch, tmp_path):
-    env_path = tmp_path / ".env"
-    env_path.write_text("OPENAI_API_KEY=from_dotenv\nOPENAI_BASE_URL=https://dotenv.example\n")
+    env_path.write_text("OPENAI_API_KEY=from_dotenv\nOPENAI_BASE_URL=https://dotenv.example\nOPENAI_MODEL=dotenv-model\n")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
-    _load_env_file_if_needed(env_path=env_path)
+    config = _load_env_file_if_needed(env_path=env_path)
 
-    assert __import__("os").environ["OPENAI_API_KEY"] == "from_dotenv"
-    assert __import__("os").environ["OPENAI_BASE_URL"] == "https://dotenv.example"
+    assert config["OPENAI_API_KEY"] == "from_dotenv"
+    assert config["OPENAI_BASE_URL"] == "https://dotenv.example"
+    assert config["OPENAI_MODEL"] == "dotenv-model"
 
 
-def test_missing_api_key_still_fails_when_env_and_dotenv_are_both_absent(monkeypatch, tmp_path):
+def test_missing_api_key_still_fails_when_project_dotenv_is_absent(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(
-        "weakness_driven_problem_synthesis.llm_client._repo_root",
-        lambda: tmp_path,
-    )
 
-    with pytest.raises(RuntimeError, match="Missing required environment variable: OPENAI_API_KEY"):
+    with pytest.raises(RuntimeError, match="Missing required config in .env: OPENAI_API_KEY"):
         build_provider_client(provider="openai", model=None)
 
 
-def test_explicit_model_overrides_environment_model(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "key")
-    monkeypatch.setenv("OPENAI_MODEL", "env-model")
+def test_explicit_model_overrides_project_dotenv_model(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_BASE_URL=https://dotenv.example\nOPENAI_MODEL=dotenv-model\n")
+    monkeypatch.chdir(tmp_path)
 
     calls = {}
 
@@ -274,31 +261,14 @@ def test_explicit_model_overrides_environment_model(monkeypatch):
 
     client = build_provider_client(provider="openai", model="cli-model")
     assert client.model == "cli-model"
+    assert calls["api_key"] == "dotenv-key"
+    assert calls["base_url"] == "https://dotenv.example"
 
 
-def test_model_name_uses_environment_when_cli_model_missing(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "key")
-    monkeypatch.setenv("OPENAI_MODEL", "env-model")
-
-    class FakeAsyncOpenAI:
-        def __init__(self, *, api_key, base_url):
-            pass
-
-    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
-
-    client = build_provider_client(provider="openai", model=None)
-    assert client.model == "env-model"
-
-
-def test_model_name_uses_dotenv_as_fallback(monkeypatch, tmp_path):
+def test_model_name_uses_project_dotenv_when_cli_model_missing(monkeypatch, tmp_path):
     env_path = tmp_path / ".env"
-    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_MODEL=dotenv-model\n")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-    monkeypatch.setattr(
-        "weakness_driven_problem_synthesis.llm_client._repo_root",
-        lambda: tmp_path,
-    )
+    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_BASE_URL=https://dotenv.example\nOPENAI_MODEL=dotenv-model\n")
+    monkeypatch.chdir(tmp_path)
 
     class FakeAsyncOpenAI:
         def __init__(self, *, api_key, base_url):
@@ -310,15 +280,50 @@ def test_model_name_uses_dotenv_as_fallback(monkeypatch, tmp_path):
     assert client.model == "dotenv-model"
 
 
-def test_missing_model_name_fails_when_cli_env_and_dotenv_are_all_absent(monkeypatch, tmp_path):
-    monkeypatch.setenv("OPENAI_API_KEY", "key")
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-    monkeypatch.setattr(
-        "weakness_driven_problem_synthesis.llm_client._repo_root",
-        lambda: tmp_path,
-    )
+def test_model_name_uses_project_cwd_dotenv(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_MODEL=dotenv-model\n")
+    monkeypatch.chdir(tmp_path)
 
-    with pytest.raises(RuntimeError, match="Missing required model configuration: OPENAI_MODEL"):
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key, base_url):
+            pass
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    client = build_provider_client(provider="openai", model=None)
+    assert client.model == "dotenv-model"
+
+
+def test_project_dotenv_ignores_same_named_shell_environment(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_MODEL=dotenv-model\nOPENAI_BASE_URL=https://dotenv.example\n")
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setenv("OPENAI_MODEL", "env-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example")
+    monkeypatch.chdir(tmp_path)
+
+    calls = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key, base_url):
+            calls["api_key"] = api_key
+            calls["base_url"] = base_url
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
+
+    client = build_provider_client(provider="openai", model=None)
+    assert client.model == "dotenv-model"
+    assert calls["api_key"] == "dotenv-key"
+    assert calls["base_url"] == "https://dotenv.example"
+
+
+def test_missing_model_name_fails_when_project_dotenv_missing_field(monkeypatch, tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_API_KEY=dotenv-key\nOPENAI_BASE_URL=https://dotenv.example\n")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(RuntimeError, match="Missing required config in .env: OPENAI_MODEL"):
         build_provider_client(provider="openai", model=None)
 
 

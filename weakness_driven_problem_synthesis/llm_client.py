@@ -148,37 +148,43 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _load_env_file_if_needed(*, env_path: Path | None = None) -> None:
-    path = env_path or (_repo_root() / ".env")
-    if not path.exists():
-        return
+def _project_env_path(*, cwd: Path | None = None) -> Path:
+    return (cwd or Path.cwd()) / ".env"
 
+
+def _load_env_file_if_needed(*, env_path: Path | None = None) -> dict[str, str]:
+    path = env_path or _project_env_path()
+    if not path.exists():
+        return {}
+
+    loaded: dict[str, str] = {}
     for raw_line in path.read_text().splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if not key or key in os.environ:
+        if not key:
             continue
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
             value = value[1:-1]
-        os.environ[key] = value
+        loaded[key] = value
+    return loaded
 
 
 def _model_env_var_for_provider(provider: str) -> str:
     return "ANTHROPIC_MODEL" if provider == "anthropic" else "OPENAI_MODEL"
 
 
-def _resolve_model_name(provider: str, model: str | None) -> str:
+def _resolve_model_name(provider: str, model: str | None, *, config: dict[str, str]) -> str:
     if model:
         return model
     env_var = _model_env_var_for_provider(provider)
-    env_model = os.getenv(env_var)
+    env_model = config.get(env_var)
     if env_model:
         return env_model
-    raise RuntimeError(f"Missing required model configuration: {env_var}")
+    raise RuntimeError(f"Missing required config in .env: {env_var}")
 
 
 def _parse_json_with_fence_fallback(raw_output: Any) -> dict | list[dict]:
@@ -198,13 +204,13 @@ def build_provider_client(provider: str, model: str | None) -> ProviderClient:
     if provider not in SUPPORTED_PROVIDERS:
         raise RuntimeError(f"Unsupported provider: {provider}")
 
-    _load_env_file_if_needed()
+    config = _load_env_file_if_needed()
 
     env_var = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
-    if not os.getenv(env_var):
-        raise RuntimeError(f"Missing required environment variable: {env_var}")
+    if not config.get(env_var):
+        raise RuntimeError(f"Missing required config in .env: {env_var}")
 
-    resolved_model = _resolve_model_name(provider, model)
+    resolved_model = _resolve_model_name(provider, model, config=config)
     if provider == "openai":
         try:
             from openai import AsyncOpenAI
@@ -215,8 +221,8 @@ def build_provider_client(provider: str, model: str | None) -> ProviderClient:
             provider=provider,
             model=resolved_model,
             client=AsyncOpenAI(
-                api_key=os.environ.get("OPENAI_API_KEY"),
-                base_url=os.environ.get("OPENAI_BASE_URL"),
+                api_key=config.get("OPENAI_API_KEY"),
+                base_url=config.get("OPENAI_BASE_URL"),
             ),
         )
 
@@ -228,7 +234,7 @@ def build_provider_client(provider: str, model: str | None) -> ProviderClient:
     return AnthropicProviderClient(
         provider=provider,
         model=resolved_model,
-        client=AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY")),
+        client=AsyncAnthropic(api_key=config.get("ANTHROPIC_API_KEY")),
     )
 
 
@@ -243,7 +249,9 @@ async def complete_json(
     provider_client: Any | None = None,
 ) -> dict | list[dict]:
     client = provider_client or build_provider_client(provider=provider, model=model)
-    resolved_model = model or getattr(client, "model", None) or _resolve_model_name(provider, model)
+    resolved_model = model or getattr(client, "model", None)
+    if resolved_model is None:
+        raise RuntimeError("Provider client did not expose a resolved model")
     repair_prompt = prompt
     last_raw_output: Any | None = None
 

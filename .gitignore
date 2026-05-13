@@ -3,3 +3,4 @@
 __pycache__/
 *.pyc
 glm51_eval_inference_merged.jsonl
+.env
