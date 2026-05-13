@@ -1,6 +1,7 @@
 import pytest
 
 from weakness_driven_problem_synthesis.cluster import (
+    CLUSTER_PROMPT_MAX_CHARS,
     cluster_weaknesses,
     map_questions_to_clusters,
 )
@@ -225,6 +226,76 @@ async def test_cluster_weaknesses_allows_empty_resumed_artifact_when_attribution
 
     assert result.weaknesses == []
     assert result.evidence_question_ids == {}
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_uses_single_call_for_small_inputs(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    client = FakeProvider(
+        outputs=[
+            '[{"id":"W001","name":"Recursion termination","description":"recursion bugs","covered_tags":["recursion:base-case-missing"],"dominant_language":"python","dominant_category":"algorithms"}]'
+        ]
+    )
+
+    result = await cluster_weaknesses(
+        [make_attribution(1, ["recursion:base-case-missing"])],
+        eval_records=[make_eval_record(1, "small case")],
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert len(client.calls) == 1
+    assert result.weaknesses[0].id == "W001"
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_chunks_large_inputs_and_keeps_each_prompt_under_budget(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    tag_prefix = "t" * 7_000
+    attributions = [make_attribution(index, [f"{tag_prefix}:{index}"]) for index in range(1, 7)]
+    eval_records = [make_eval_record(index, "small case") for index in range(1, 7)]
+    client = FakeProvider(
+        outputs=[
+            f'[{{"id":"WA","name":"Chunk A","description":"d","covered_tags":["{tag_prefix}:1","{tag_prefix}:2","{tag_prefix}:3"],"dominant_language":"python","dominant_category":"algorithms"}}]',
+            f'[{{"id":"WB","name":"Chunk B","description":"d","covered_tags":["{tag_prefix}:4","{tag_prefix}:5","{tag_prefix}:6"],"dominant_language":"python","dominant_category":"algorithms"}}]',
+            f'[{{"id":"W999","name":"Merged weakness","description":"merged","covered_tags":["{tag_prefix}:1","{tag_prefix}:2","{tag_prefix}:3","{tag_prefix}:4","{tag_prefix}:5","{tag_prefix}:6"],"dominant_language":"python","dominant_category":"algorithms"}}]',
+        ]
+    )
+
+    result = await cluster_weaknesses(
+        attributions,
+        eval_records=eval_records,
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert len(client.calls) == 3
+    assert all(len(call["prompt"]) <= CLUSTER_PROMPT_MAX_CHARS for call in client.calls)
+    assert [weakness.id for weakness in result.weaknesses] == ["W001"]
+    assert result.weaknesses[0].name == "Merged weakness"
+    assert result.evidence_question_ids["W001"] == [1, 2, 3, 4, 5, 6]
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_fails_fast_when_single_block_exceeds_budget(tmp_path):
+    output_path = tmp_path / "weaknesses.json"
+    huge_tag = "t" * 30_000
+    attribution = make_attribution(1, [huge_tag])
+    eval_record = make_eval_record(1, "small case")
+
+    with pytest.raises(ValueError, match="single tag summary block exceeds cluster prompt budget"):
+        await cluster_weaknesses(
+            [attribution],
+            eval_records=[eval_record],
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=FakeProvider(outputs=[]),
+        )
 
 
 def test_map_questions_to_clusters_counts_multi_cluster_membership():
