@@ -2,6 +2,7 @@ import pytest
 
 from weakness_driven_problem_synthesis.cluster import (
     CLUSTER_PROMPT_MAX_CHARS,
+    _merge_chunked_weaknesses,
     cluster_weaknesses,
     map_questions_to_clusters,
 )
@@ -307,6 +308,291 @@ async def test_cluster_weaknesses_includes_covered_tags_in_merge_prompt_under_bu
     assert '"covered_tags"' in merge_prompt
     assert f"{tag_prefix}:1" in merge_prompt
     assert len(merge_prompt) <= CLUSTER_PROMPT_MAX_CHARS
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_hierarchically_merges_when_single_merge_prompt_would_overflow(tmp_path, monkeypatch):
+    output_path = tmp_path / "weaknesses.json"
+    prompt_template = "cluster prompt"
+    monkeypatch.setattr("weakness_driven_problem_synthesis.cluster.load_prompt", lambda name: prompt_template)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.cluster.CLUSTER_PROMPT_MAX_CHARS", 420)
+
+    attributions = [make_attribution(index, [f"tag:{index}"]) for index in range(1, 5)]
+    eval_records = [make_eval_record(index, f"case {index}") for index in range(1, 5)]
+    client = FakeProvider(
+        outputs=[
+            '[{"id":"WA","name":"Chunk A","description":"d","covered_tags":["tag:1"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WB","name":"Chunk B","description":"d","covered_tags":["tag:2"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WC","name":"Chunk C","description":"d","covered_tags":["tag:3"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WD","name":"Chunk D","description":"d","covered_tags":["tag:4"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WM1","name":"Merged Left","description":"d","covered_tags":["tag:1","tag:2"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WM2","name":"Merged Right","description":"d","covered_tags":["tag:3","tag:4"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"W999","name":"Merged All","description":"merged","covered_tags":["tag:1","tag:2","tag:3","tag:4"],"dominant_language":"python","dominant_category":"algorithms"}]',
+        ]
+    )
+
+    result = await cluster_weaknesses(
+        attributions,
+        eval_records=eval_records,
+        output_path=output_path,
+        provider="openai",
+        model="test-model",
+        provider_client=client,
+    )
+
+    assert len(client.calls) == 5
+    assert [weakness.id for weakness in result.weaknesses] == ["W001"]
+    assert result.weaknesses[0].name == "Merged All"
+    assert result.evidence_question_ids["W001"] == [1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_merge_chunked_weaknesses_allows_same_weakness_count_when_merge_chunk_count_shrinks(monkeypatch):
+    prompt_template = "cluster prompt"
+
+    current_blocks_4 = ["b1", "b2", "b3", "b4"]
+    current_blocks_same_count = ["s1", "s2", "s3", "s4"]
+    final_blocks_1 = ["f1"]
+
+    def fake_chunk_blocks_by_char_budget(*, prompt_template, blocks, budget_chars):
+        if blocks == current_blocks_4:
+            return [["b1"], ["b2"], ["b3"], ["b4"]]
+        if blocks == current_blocks_same_count:
+            return [["s1", "s2"], ["s3", "s4"]]
+        if blocks == final_blocks_1:
+            return [["f1"]]
+        raise AssertionError(f"unexpected blocks: {blocks}")
+
+    def fake_render_weakness_merge_blocks(weaknesses):
+        if [item.name for item in weaknesses] == ["A", "B", "C", "D"]:
+            return current_blocks_4
+        if [item.name for item in weaknesses] == ["A1", "B1", "C1", "D1"]:
+            return current_blocks_same_count
+        if [item.name for item in weaknesses] == ["ALL"]:
+            return final_blocks_1
+        if [item.name for item in weaknesses] == ["ALL", "ALL"]:
+            return final_blocks_1
+        raise AssertionError(f"unexpected weaknesses: {[item.name for item in weaknesses]}")
+
+    merge_outputs = [
+        [
+            Weakness.model_validate(
+                {
+                    "id": "W10",
+                    "name": "A1",
+                    "description": "d",
+                    "covered_tags": ["tag:1"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            )
+        ],
+        [
+            Weakness.model_validate(
+                {
+                    "id": "W11",
+                    "name": "B1",
+                    "description": "d",
+                    "covered_tags": ["tag:2"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            )
+        ],
+        [
+            Weakness.model_validate(
+                {
+                    "id": "W12",
+                    "name": "C1",
+                    "description": "d",
+                    "covered_tags": ["tag:3"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            )
+        ],
+        [
+            Weakness.model_validate(
+                {
+                    "id": "W13",
+                    "name": "D1",
+                    "description": "d",
+                    "covered_tags": ["tag:4"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            )
+        ],
+        [
+            Weakness.model_validate(
+                {
+                    "id": "W14",
+                    "name": "ALL",
+                    "description": "d",
+                    "covered_tags": ["tag:1", "tag:2", "tag:3", "tag:4"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            )
+        ],
+        [
+            Weakness.model_validate(
+                {
+                    "id": "W15",
+                    "name": "ALL",
+                    "description": "d",
+                    "covered_tags": ["tag:1", "tag:2", "tag:3", "tag:4"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            )
+        ],
+        [
+            Weakness.model_validate(
+                {
+                    "id": "W16",
+                    "name": "ALL",
+                    "description": "d",
+                    "covered_tags": ["tag:1", "tag:2", "tag:3", "tag:4"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            )
+        ],
+    ]
+
+    async def fake_cluster_chunk(*, prompt_template, blocks, provider, model, provider_client):
+        return merge_outputs.pop(0)
+
+    monkeypatch.setattr(
+        "weakness_driven_problem_synthesis.cluster._chunk_blocks_by_char_budget",
+        fake_chunk_blocks_by_char_budget,
+    )
+    monkeypatch.setattr(
+        "weakness_driven_problem_synthesis.cluster._render_weakness_merge_blocks",
+        fake_render_weakness_merge_blocks,
+    )
+    monkeypatch.setattr(
+        "weakness_driven_problem_synthesis.cluster._cluster_chunk",
+        fake_cluster_chunk,
+    )
+
+    chunked_weaknesses = [
+        [
+            Weakness.model_validate(
+                {
+                    "id": "WA",
+                    "name": "A",
+                    "description": "d",
+                    "covered_tags": ["tag:1"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            ),
+            Weakness.model_validate(
+                {
+                    "id": "WB",
+                    "name": "B",
+                    "description": "d",
+                    "covered_tags": ["tag:2"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            ),
+        ],
+        [
+            Weakness.model_validate(
+                {
+                    "id": "WC",
+                    "name": "C",
+                    "description": "d",
+                    "covered_tags": ["tag:3"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            ),
+            Weakness.model_validate(
+                {
+                    "id": "WD",
+                    "name": "D",
+                    "description": "d",
+                    "covered_tags": ["tag:4"],
+                    "dominant_language": "python",
+                    "dominant_category": "algorithms",
+                }
+            ),
+        ],
+    ]
+
+    result = await _merge_chunked_weaknesses(
+        chunked_weaknesses=chunked_weaknesses,
+        prompt_template=prompt_template,
+        provider="openai",
+        model="test-model",
+        provider_client=None,
+    )
+
+    assert len(result) == 1
+    assert result[0].name == "ALL"
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_raises_when_hierarchical_merge_makes_no_progress(tmp_path, monkeypatch):
+    output_path = tmp_path / "weaknesses.json"
+    prompt_template = "cluster prompt"
+    monkeypatch.setattr("weakness_driven_problem_synthesis.cluster.load_prompt", lambda name: prompt_template)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.cluster.CLUSTER_PROMPT_MAX_CHARS", 320)
+
+    attributions = [make_attribution(index, [f"tag:{index}"]) for index in range(1, 5)]
+    eval_records = [make_eval_record(index, f"case {index}") for index in range(1, 5)]
+    client = FakeProvider(
+        outputs=[
+            '[{"id":"WA","name":"Chunk A","description":"d","covered_tags":["tag:1"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WB","name":"Chunk B","description":"d","covered_tags":["tag:2"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WC","name":"Chunk C","description":"d","covered_tags":["tag:3"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WD","name":"Chunk D","description":"d","covered_tags":["tag:4"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WM1","name":"Merged Left A","description":"d","covered_tags":["tag:1"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WM2","name":"Merged Left B","description":"d","covered_tags":["tag:2"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WM3","name":"Merged Right A","description":"d","covered_tags":["tag:3"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WM4","name":"Merged Right B","description":"d","covered_tags":["tag:4"],"dominant_language":"python","dominant_category":"algorithms"}]',
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cluster merge made no progress under prompt budget"):
+        await cluster_weaknesses(
+            attributions,
+            eval_records=eval_records,
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=client,
+        )
+
+
+@pytest.mark.asyncio
+async def test_cluster_weaknesses_raises_when_hierarchical_merge_exceeds_max_rounds(tmp_path, monkeypatch):
+    output_path = tmp_path / "weaknesses.json"
+    prompt_template = "cluster prompt"
+    monkeypatch.setattr("weakness_driven_problem_synthesis.cluster.load_prompt", lambda name: prompt_template)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.cluster.CLUSTER_PROMPT_MAX_CHARS", 320)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.cluster._max_merge_rounds_for", lambda _: 1)
+
+    attributions = [make_attribution(index, [f"tag:{index}"]) for index in range(1, 7)]
+    eval_records = [make_eval_record(index, f"case {index}") for index in range(1, 7)]
+    client = FakeProvider(
+        outputs=[
+            '[{"id":"WA","name":"Chunk A","description":"d","covered_tags":["tag:1"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WB","name":"Chunk B","description":"d","covered_tags":["tag:2"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WC","name":"Chunk C","description":"d","covered_tags":["tag:3"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WD","name":"Chunk D","description":"d","covered_tags":["tag:4"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WE","name":"Chunk E","description":"d","covered_tags":["tag:5"],"dominant_language":"python","dominant_category":"algorithms"},{"id":"WF","name":"Chunk F","description":"d","covered_tags":["tag:6"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WM1","name":"Merged 1","description":"d","covered_tags":["tag:1","tag:2"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WM2","name":"Merged 2","description":"d","covered_tags":["tag:3","tag:4"],"dominant_language":"python","dominant_category":"algorithms"}]',
+            '[{"id":"WM3","name":"Merged 3","description":"d","covered_tags":["tag:5","tag:6"],"dominant_language":"python","dominant_category":"algorithms"}]',
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cluster merge exceeded max rounds under prompt budget"):
+        await cluster_weaknesses(
+            attributions,
+            eval_records=eval_records,
+            output_path=output_path,
+            provider="openai",
+            model="test-model",
+            provider_client=client,
+        )
 
 
 @pytest.mark.asyncio

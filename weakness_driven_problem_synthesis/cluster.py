@@ -141,6 +141,10 @@ def _renumber_weaknesses(weaknesses: list[Weakness]) -> list[Weakness]:
     return renumbered
 
 
+def _max_merge_rounds_for(initial_weakness_count: int) -> int:
+    return max(6, initial_weakness_count)
+
+
 async def _merge_chunked_weaknesses(
     *,
     chunked_weaknesses: list[list[Weakness]],
@@ -149,22 +153,52 @@ async def _merge_chunked_weaknesses(
     model: str | None,
     provider_client: Any | None,
 ) -> list[Weakness]:
-    merged_input = [weakness for chunk in chunked_weaknesses for weakness in chunk]
-    merge_blocks = _render_weakness_merge_blocks(merged_input)
-    merge_chunks = _chunk_blocks_by_char_budget(
-        prompt_template=prompt_template,
-        blocks=merge_blocks,
-        budget_chars=CLUSTER_PROMPT_MAX_CHARS,
-    )
-    if len(merge_chunks) != 1:
-        raise ValueError("merged weakness summaries still exceed cluster prompt budget")
-    return await _cluster_chunk(
-        prompt_template=prompt_template,
-        blocks=merge_chunks[0],
-        provider=provider,
-        model=model,
-        provider_client=provider_client,
-    )
+    # Hierarchical merge keeps each merge prompt under budget even when the
+    # first-pass weakness summaries are still too large to combine at once.
+    current_weaknesses = [weakness for chunk in chunked_weaknesses for weakness in chunk]
+    max_rounds = _max_merge_rounds_for(len(current_weaknesses))
+    for _round_index in range(max_rounds):
+        merge_blocks = _render_weakness_merge_blocks(current_weaknesses)
+        merge_chunks = _chunk_blocks_by_char_budget(
+            prompt_template=prompt_template,
+            blocks=merge_blocks,
+            budget_chars=CLUSTER_PROMPT_MAX_CHARS,
+        )
+        if not merge_chunks:
+            return []
+        if len(merge_chunks) == 1:
+            return await _cluster_chunk(
+                prompt_template=prompt_template,
+                blocks=merge_chunks[0],
+                provider=provider,
+                model=model,
+                provider_client=provider_client,
+            )
+
+        next_weaknesses: list[Weakness] = []
+        for chunk_blocks in merge_chunks:
+            next_weaknesses.extend(
+                await _cluster_chunk(
+                    prompt_template=prompt_template,
+                    blocks=chunk_blocks,
+                    provider=provider,
+                    model=model,
+                    provider_client=provider_client,
+                )
+            )
+        next_merge_blocks = _render_weakness_merge_blocks(next_weaknesses)
+        next_merge_chunks = _chunk_blocks_by_char_budget(
+            prompt_template=prompt_template,
+            blocks=next_merge_blocks,
+            budget_chars=CLUSTER_PROMPT_MAX_CHARS,
+        )
+        chunk_count_improved = len(next_merge_chunks) < len(merge_chunks)
+        weakness_count_improved = len(next_weaknesses) < len(current_weaknesses)
+        if not chunk_count_improved and not weakness_count_improved:
+            raise ValueError("cluster merge made no progress under prompt budget")
+        current_weaknesses = next_weaknesses
+
+    raise ValueError("cluster merge exceeded max rounds under prompt budget")
 
 
 def map_questions_to_clusters(
