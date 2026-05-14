@@ -14,3 +14,7 @@ dev = [
   "pytest>=8.4.0",
   "pytest-asyncio>=1.1.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["weakness_driven_problem_synthesis*"]
+exclude = ["scripts*", "tests*"]
