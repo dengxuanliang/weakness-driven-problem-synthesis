@@ -218,6 +218,142 @@ async def test_complete_json_accepts_markdown_fenced_array_json():
     assert result[0]["id"] == "W1"
 
 
+@pytest.mark.asyncio
+async def test_complete_json_retries_retryable_html_403_gateway_page():
+    class Retryable403Provider:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, *, prompt, schema, system, max_tokens, model):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError(
+                    "403 PermissionDenied <html><title>Access Denied</title><body>firewall blocked</body></html>"
+                )
+            return '{"ok": true}'
+
+    client = Retryable403Provider()
+    result = await complete_json(
+        "prompt",
+        {"type": "object"},
+        provider_client=client,
+        model="test-model",
+    )
+
+    assert result == {"ok": True}
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_complete_json_does_not_retry_non_retryable_403_auth_error():
+    class Auth403Provider:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, *, prompt, schema, system, max_tokens, model):
+            self.calls += 1
+            raise RuntimeError("403 PermissionDenied invalid api key")
+
+    client = Auth403Provider()
+
+    with pytest.raises(RuntimeError, match="invalid api key"):
+        await complete_json(
+            "prompt",
+            {"type": "object"},
+            provider_client=client,
+            model="test-model",
+        )
+
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_json_retries_403_html_from_response_object(monkeypatch):
+    class _Response:
+        def __init__(self):
+            self.text = "<html><body>Access Denied</body></html>"
+            self.content = b"<html><body>Access Denied</body></html>"
+
+    class Response403Provider:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, *, prompt, schema, system, max_tokens, model):
+            self.calls += 1
+            if self.calls == 1:
+                exc = RuntimeError("403 PermissionDenied")
+                exc.response = _Response()
+                raise exc
+            return '{"ok": true}'
+
+    client = Response403Provider()
+    result = await complete_json(
+        "prompt",
+        {"type": "object"},
+        provider_client=client,
+        model="test-model",
+    )
+
+    assert result == {"ok": True}
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_complete_json_global_throttler_limits_concurrent_provider_calls(monkeypatch):
+    starts: list[int] = []
+    finishes: list[int] = []
+    current_in_flight = 0
+    max_in_flight = 0
+
+    class ConcurrencyProbeProvider:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, *, prompt, schema, system, max_tokens, model):
+            nonlocal current_in_flight, max_in_flight
+            self.calls += 1
+            starts.append(self.calls)
+            current_in_flight += 1
+            max_in_flight = max(max_in_flight, current_in_flight)
+            await asyncio.sleep(0)
+            current_in_flight -= 1
+            finishes.append(self.calls)
+            return '{"ok": true}'
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.llm_client._REQUEST_THROTTLER", None)
+    monkeypatch.setenv("WEAKNESS_SYNTH_MAX_IN_FLIGHT", "1")
+    monkeypatch.setenv("WEAKNESS_SYNTH_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("WEAKNESS_SYNTH_BURST_LIMIT", "100")
+    monkeypatch.setenv("WEAKNESS_SYNTH_BURST_COOLDOWN_MS", "0")
+
+    client = ConcurrencyProbeProvider()
+    await asyncio.gather(
+        complete_json("p1", {"type": "object"}, provider_client=client, model="test-model"),
+        complete_json("p2", {"type": "object"}, provider_client=client, model="test-model"),
+        complete_json("p3", {"type": "object"}, provider_client=client, model="test-model"),
+    )
+
+    assert max_in_flight == 1
+    assert starts == [1, 2, 3]
+    assert finishes == [1, 2, 3]
+
+
+def test_request_throttler_reads_env_configuration(monkeypatch):
+    monkeypatch.setenv("WEAKNESS_SYNTH_MAX_IN_FLIGHT", "1")
+    monkeypatch.setenv("WEAKNESS_SYNTH_MIN_INTERVAL_MS", "250")
+    monkeypatch.setenv("WEAKNESS_SYNTH_BURST_LIMIT", "7")
+    monkeypatch.setenv("WEAKNESS_SYNTH_BURST_COOLDOWN_MS", "900")
+
+    from weakness_driven_problem_synthesis.llm_client import _REQUEST_THROTTLER, _get_request_throttler
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.llm_client._REQUEST_THROTTLER", None)
+    throttler = _get_request_throttler()
+    assert throttler.max_in_flight == 1
+    assert throttler.min_interval_seconds == 0.25
+    assert throttler.burst_limit == 7
+    assert throttler.burst_cooldown_seconds == 0.9
+
+
 def test_missing_api_key_fails_fast(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError):

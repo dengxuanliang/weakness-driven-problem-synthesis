@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ SUPPORTED_PROVIDERS = {"anthropic", "openai"}
 
 OPENAI_JSON_OBJECT_MODE = "json_object"
 OPENAI_PLAIN_TEXT_ARRAY_MODE = "plain_text_array"
+_REQUEST_THROTTLER: "_RequestThrottler | None" = None
 
 
 @dataclass
@@ -96,6 +98,77 @@ class AnthropicProviderClient(ProviderClient):
         if not text_blocks:
             raise ValueError("Anthropic response did not contain any text blocks")
         return "".join(text_blocks)
+
+
+@dataclass
+class _RequestThrottler:
+    max_in_flight: int
+    min_interval_seconds: float
+    burst_limit: int
+    burst_cooldown_seconds: float
+
+    def __post_init__(self) -> None:
+        self._semaphore = asyncio.Semaphore(self.max_in_flight)
+        self._lock = asyncio.Lock()
+        self._last_started_at = 0.0
+        self._recent_starts: list[float] = []
+
+    async def __aenter__(self) -> "_RequestThrottler":
+        await self._semaphore.acquire()
+        await self._acquire_start_slot()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        self._semaphore.release()
+
+    async def _acquire_start_slot(self) -> None:
+        while True:
+            async with self._lock:
+                now = asyncio.get_running_loop().time()
+                self._recent_starts = [ts for ts in self._recent_starts if now - ts < 60.0]
+                interval_wait = max(0.0, self.min_interval_seconds - (now - self._last_started_at))
+                burst_wait = 0.0
+                if self.burst_limit > 0 and len(self._recent_starts) >= self.burst_limit:
+                    burst_wait = self.burst_cooldown_seconds
+                wait_for = max(interval_wait, burst_wait)
+                if wait_for <= 0:
+                    now = asyncio.get_running_loop().time()
+                    self._last_started_at = now
+                    self._recent_starts.append(now)
+                    return
+            await asyncio.sleep(wait_for)
+
+
+def _read_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _read_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _get_request_throttler() -> _RequestThrottler:
+    global _REQUEST_THROTTLER
+    if _REQUEST_THROTTLER is None:
+        _REQUEST_THROTTLER = _RequestThrottler(
+            max_in_flight=max(1, _read_int_env("WEAKNESS_SYNTH_MAX_IN_FLIGHT", 2)),
+            min_interval_seconds=max(0.0, _read_float_env("WEAKNESS_SYNTH_MIN_INTERVAL_MS", 150.0) / 1000.0),
+            burst_limit=max(1, _read_int_env("WEAKNESS_SYNTH_BURST_LIMIT", 12)),
+            burst_cooldown_seconds=max(0.0, _read_float_env("WEAKNESS_SYNTH_BURST_COOLDOWN_MS", 1200.0) / 1000.0),
+        )
+    return _REQUEST_THROTTLER
 
 
 def _openai_completion_mode(schema: dict[str, Any]) -> str:
@@ -341,13 +414,14 @@ async def _complete_with_backoff(
     last_error: Exception | None = None
     for _ in range(5):
         try:
-            return await client.complete_json(
-                prompt=prompt,
-                schema=schema,
-                system=system,
-                max_tokens=max_tokens,
-                model=model,
-            )
+            async with _get_request_throttler():
+                return await client.complete_json(
+                    prompt=prompt,
+                    schema=schema,
+                    system=system,
+                    max_tokens=max_tokens,
+                    model=model,
+                )
         except Exception as exc:
             last_error = exc
             if not _looks_retryable(exc):
@@ -360,9 +434,54 @@ async def _complete_with_backoff(
 
 
 def _looks_retryable(error: Exception) -> bool:
-    message = str(error).lower()
+    response_text = _extract_error_response_text(error)
+    message_text = str(error).lower()
+    response_message = response_text.lower() if response_text else ""
+    combined_message = f"{message_text}\n{response_message}".strip()
     retry_markers = ("rate limit", "429", "500", "502", "503", "504", "timeout", "temporarily unavailable")
-    return any(marker in message for marker in retry_markers)
+    if any(marker in combined_message for marker in retry_markers):
+        return True
+    if "403" in message_text and _looks_like_gateway_block_page(response_message or message_text):
+        return True
+    return False
+
+
+def _extract_error_response_text(error: Exception) -> str | None:
+    for attr_name in ("response", "resp", "body", "content", "text"):
+        value = getattr(error, attr_name, None)
+        if value is None:
+            continue
+        if isinstance(value, bytes):
+            try:
+                return value.decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+        if isinstance(value, str):
+            return value
+        nested_text = getattr(value, "text", None)
+        if isinstance(nested_text, str):
+            return nested_text
+        nested_content = getattr(value, "content", None)
+        if isinstance(nested_content, bytes):
+            return nested_content.decode("utf-8", errors="ignore")
+        if isinstance(nested_content, str):
+            return nested_content
+    return None
+
+
+def _looks_like_gateway_block_page(message: str) -> bool:
+    lowered = html.unescape(message.lower())
+    block_markers = (
+        "<html",
+        "<!doctype html",
+        "permission denied",
+        "access denied",
+        "forbidden",
+        "firewall",
+        "blocked",
+        "captcha",
+    )
+    return any(marker in lowered for marker in block_markers)
 
 
 def _preview_text(value: Any, *, limit: int = 300) -> str:
