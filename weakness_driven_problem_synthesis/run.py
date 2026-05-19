@@ -126,16 +126,61 @@ def _load_attributions_jsonl(*, path: Path) -> list[Attribution]:
     return attributions
 
 
+def _load_weakness_set_json(*, path: Path) -> WeaknessSet:
+    if not path.exists():
+        raise ValueError(f"weaknesses file does not exist: {path}")
+
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid weaknesses JSON: {exc.msg}") from exc
+
+    try:
+        weakness_set = WeaknessSet.model_validate(payload)
+    except Exception as exc:
+        raise ValueError(f"invalid weaknesses artifact: {exc}") from exc
+
+    if not weakness_set.weaknesses:
+        raise ValueError("weaknesses file must contain at least one weakness")
+    if not weakness_set.evidence_question_ids:
+        raise ValueError("weaknesses file must contain evidence_question_ids")
+
+    for weakness in weakness_set.weaknesses:
+        evidence_ids = weakness_set.evidence_question_ids.get(weakness.id)
+        if not evidence_ids:
+            raise ValueError(f"weaknesses file is missing evidence_question_ids for {weakness.id}")
+
+    return weakness_set
+
+
+def _validate_weakness_evidence_against_attributions(
+    *,
+    weakness_set: WeaknessSet,
+    truly_failed_attributions: list[Attribution],
+) -> None:
+    failed_ids = {item.question_id for item in truly_failed_attributions}
+    mismatched: dict[str, list[int]] = {}
+    for weakness in weakness_set.weaknesses:
+        evidence_ids = weakness_set.evidence_question_ids.get(weakness.id, [])
+        missing_ids = [question_id for question_id in evidence_ids if question_id not in failed_ids]
+        if missing_ids:
+            mismatched[weakness.id] = missing_ids
+
+    if mismatched:
+        raise ValueError("weakness evidence question ids do not match truly failed attributions")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--eval-log", required=True)
+    parser.add_argument("--eval-log")
     parser.add_argument("--total-questions", type=int, required=True)
     parser.add_argument("--output-dir", default="./synthesis_output")
     parser.add_argument("--provider", default="anthropic")
     parser.add_argument("--model")
     parser.add_argument("--concurrency", type=int, default=8)
-    parser.add_argument("--start-stage", choices=("attribute", "cluster"), default="attribute")
+    parser.add_argument("--start-stage", choices=("attribute", "cluster", "synthesize"), default="attribute")
     parser.add_argument("--attributions-file")
+    parser.add_argument("--weaknesses-file")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--restart", action="store_true")
     parser.add_argument("--yes", action="store_true")
@@ -163,7 +208,7 @@ def estimate_call_counts(
 ) -> dict[str, int]:
     synthesis_batches = 0 if failed_count <= 0 else (total_questions + batch_size - 1) // batch_size
     return {
-        "attribution_calls": 0 if start_stage == "cluster" else failed_count,
+        "attribution_calls": 0 if start_stage in {"cluster", "synthesize"} else failed_count,
         "synthesis_batches": synthesis_batches,
     }
 
@@ -177,20 +222,43 @@ def should_continue_after_estimate(*, non_interactive: bool = False) -> bool:
 
 async def main_with_args(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
+    if args.start_stage == "attribute" and not args.eval_log:
+        raise ValueError("--eval-log is required when --start-stage=attribute")
     if args.start_stage == "cluster" and not args.attributions_file:
         raise ValueError("--attributions-file is required when --start-stage=cluster")
+    if args.start_stage == "synthesize" and not args.attributions_file:
+        raise ValueError("--attributions-file is required when --start-stage=synthesize")
+    if args.start_stage == "synthesize" and not args.weaknesses_file:
+        raise ValueError("--weaknesses-file is required when --start-stage=synthesize")
 
     output_dir = prepare_output_dir(Path(args.output_dir), restart=args.restart, resume=args.resume)
-    failed_candidates = list(load_failed_record_candidates(Path(args.eval_log)))
-    failed_records, skipped_failed_records = _partition_failed_records_by_size(
-        failed_candidates,
-        max_record_bytes=MAX_FAILED_RECORD_BYTES,
-    )
+    failed_candidates: list[FailedRecordCandidate] = []
+    failed_records = []
+    skipped_failed_records: list[dict[str, object]] = []
+    error_attributions: list[Attribution] | None = None
+    truly_failed_attributions: list[Attribution] | None = None
+    weakness_set: WeaknessSet | None = None
+
+    if args.eval_log:
+        failed_candidates = list(load_failed_record_candidates(Path(args.eval_log)))
+        failed_records, skipped_failed_records = _partition_failed_records_by_size(
+            failed_candidates,
+            max_record_bytes=MAX_FAILED_RECORD_BYTES,
+        )
+    if args.start_stage == "synthesize":
+        error_attributions = _load_attributions_jsonl(path=Path(args.attributions_file))
+        truly_failed_attributions = [item for item in error_attributions if item.is_truly_failed]
+        weakness_set = _load_weakness_set_json(path=Path(args.weaknesses_file))
+        _validate_weakness_evidence_against_attributions(
+            weakness_set=weakness_set,
+            truly_failed_attributions=truly_failed_attributions,
+        )
+
     skipped_failed_records_path = output_dir / "skipped_failed_records.jsonl"
     _write_skipped_failed_records(output_path=skipped_failed_records_path, skipped_records=skipped_failed_records)
-    failed_count = len(failed_candidates)
+    failed_count = len(failed_candidates) if args.start_stage != "synthesize" else len(error_attributions)
     estimates = estimate_call_counts(
-        failed_count=len(failed_records),
+        failed_count=len(failed_records) if args.start_stage != "synthesize" else len(truly_failed_attributions),
         total_questions=args.total_questions,
         start_stage=args.start_stage,
     )
@@ -203,7 +271,7 @@ async def main_with_args(argv: list[str]) -> int:
         return 1
 
     report_path = output_dir / "report.md"
-    if not failed_records:
+    if args.start_stage == "attribute" and not failed_records:
         _clear_stale_outputs_for_empty_run(output_dir=output_dir)
         _write_empty_weaknesses_artifact(output_path=output_dir / "weaknesses.json")
         write_report(
@@ -217,7 +285,7 @@ async def main_with_args(argv: list[str]) -> int:
         )
         return 0
 
-    if args.start_stage == "cluster":
+    if args.start_stage in {"cluster", "synthesize"}:
         error_attributions = _load_attributions_jsonl(path=Path(args.attributions_file))
     else:
         error_attributions = await attribute_failures(
@@ -228,7 +296,8 @@ async def main_with_args(argv: list[str]) -> int:
             model=args.model,
             concurrency=args.concurrency,
         )
-    truly_failed_attributions = [item for item in error_attributions if item.is_truly_failed]
+    if truly_failed_attributions is None:
+        truly_failed_attributions = [item for item in error_attributions if item.is_truly_failed]
     if not truly_failed_attributions:
         _clear_stale_outputs_for_empty_run(output_dir=output_dir)
         _write_empty_weaknesses_artifact(output_path=output_dir / "weaknesses.json")
@@ -243,13 +312,15 @@ async def main_with_args(argv: list[str]) -> int:
         )
         return 0
 
-    weakness_set = await cluster_weaknesses(
-        truly_failed_attributions,
-        eval_records=failed_records,
-        output_path=output_dir / "weaknesses.json",
-        provider=args.provider,
-        model=args.model,
-    )
+    if args.start_stage != "synthesize":
+        weakness_set = await cluster_weaknesses(
+            truly_failed_attributions,
+            eval_records=failed_records,
+            output_path=output_dir / "weaknesses.json",
+            provider=args.provider,
+            model=args.model,
+        )
+    assert weakness_set is not None
     allocations = allocate_quotas(
         {weakness.id: len(weakness_set.evidence_question_ids.get(weakness.id, [])) for weakness in weakness_set.weaknesses},
         args.total_questions,

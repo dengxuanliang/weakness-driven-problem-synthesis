@@ -24,6 +24,12 @@ The pipeline has four main stages:
 - `allocate`: distribute total synthesis budget across weaknesses
 - `synthesize`: generate new coding problems that target each weakness while enforcing anti-homogeneity constraints
 
+CLI entrypoints currently support starting from:
+
+- `attribute`: full pipeline from eval log
+- `cluster`: reuse an existing `error_attributions.jsonl`
+- `synthesize`: reuse an existing `error_attributions.jsonl` and `weaknesses.json`
+
 A final export step writes `solver_view.jsonl`, which is the solver-facing artifact intended for downstream model solving.
 
 ## Input
@@ -151,6 +157,34 @@ python scripts/run.py \
   --eval-log small_eval_500.jsonl \
   --total-questions 50 \
   --output-dir smoke_output_500_50 \
+  --provider openai \
+  --model your-model-name \
+  --yes
+```
+
+Start from the cluster stage with an existing attribution artifact:
+
+```bash
+python -m weakness_driven_problem_synthesis.run \
+  --eval-log small_eval_500.jsonl \
+  --total-questions 50 \
+  --output-dir smoke_output_500_50 \
+  --start-stage cluster \
+  --attributions-file previous_run/error_attributions.jsonl \
+  --provider openai \
+  --model your-model-name \
+  --yes
+```
+
+Start directly from synthesis with existing attribution and weakness artifacts:
+
+```bash
+python -m weakness_driven_problem_synthesis.run \
+  --total-questions 50 \
+  --output-dir smoke_output_500_50 \
+  --start-stage synthesize \
+  --attributions-file previous_run/error_attributions.jsonl \
+  --weaknesses-file previous_run/weaknesses.json \
   --provider openai \
   --model your-model-name \
   --yes
