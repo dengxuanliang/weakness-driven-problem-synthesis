@@ -563,6 +563,29 @@ async def test_cluster_start_stage_requires_attributions_file(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cluster_start_stage_requires_eval_log(tmp_path):
+    attributions_path = tmp_path / "error_attributions.jsonl"
+    attributions_path.write_text(
+        '{"question_id":1,"is_truly_failed":true,"error_tags":["recursion:base-case-missing"],"root_cause":"missed base case","ability_dimensions":["reasoning"],"evidence_snippet":"if n == 0"}\n'
+    )
+
+    with pytest.raises(ValueError, match="--eval-log is required when --start-stage=cluster"):
+        await main_with_args(
+            [
+                "--total-questions",
+                "1",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--start-stage",
+                "cluster",
+                "--attributions-file",
+                str(attributions_path),
+                "--yes",
+            ]
+        )
+
+
+@pytest.mark.asyncio
 async def test_synthesize_start_stage_requires_attributions_file(tmp_path):
     weaknesses_path = tmp_path / "weaknesses.json"
     weaknesses_path.write_text(
@@ -716,6 +739,77 @@ async def test_synthesize_start_stage_rejects_mismatched_evidence_question_ids(t
                 "--yes",
             ]
         )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_start_stage_rejects_evidence_ids_with_non_overlapping_tags(tmp_path):
+    attributions_path = tmp_path / "error_attributions.jsonl"
+    weaknesses_path = tmp_path / "weaknesses.json"
+    attributions_path.write_text(
+        '{"question_id":1,"is_truly_failed":true,"error_tags":["dp:state-transition"],"root_cause":"bad transition","ability_dimensions":["reasoning"],"evidence_snippet":"dp[i]"}\n'
+    )
+    weaknesses_path.write_text(
+        '{"weaknesses":[{"id":"W001","name":"Recursion termination","description":"recursion bugs","covered_tags":["recursion:base-case-missing"],"dominant_language":"python","dominant_category":"algorithms"}],"evidence_question_ids":{"W001":[1]}}'
+    )
+
+    with pytest.raises(ValueError, match="weakness evidence tags do not align with attribution tags"):
+        await main_with_args(
+            [
+                "--total-questions",
+                "1",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--start-stage",
+                "synthesize",
+                "--attributions-file",
+                str(attributions_path),
+                "--weaknesses-file",
+                str(weaknesses_path),
+                "--yes",
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_start_stage_accepts_matching_evidence_ids_and_tags(tmp_path, monkeypatch):
+    attributions_path = tmp_path / "error_attributions.jsonl"
+    weaknesses_path = tmp_path / "weaknesses.json"
+    output_dir = tmp_path / "out"
+    attributions_path.write_text(
+        '{"question_id":1,"is_truly_failed":true,"error_tags":["recursion:base-case-missing","recursion:stack-overflow"],"root_cause":"bad recursion","ability_dimensions":["reasoning"],"evidence_snippet":"dfs"}\n'
+    )
+    weaknesses_path.write_text(
+        '{"weaknesses":[{"id":"W001","name":"Recursion termination","description":"recursion bugs","covered_tags":["recursion:base-case-missing"],"dominant_language":"python","dominant_category":"algorithms"}],"evidence_question_ids":{"W001":[1]}}'
+    )
+
+    async def fake_synthesize_for_weaknesses(weakness_set, *, allocations, output_path, provider, model, provider_client=None):
+        assert allocations == {"W001": 1}
+        output_path.write_text(
+            '{"id":"S00001","weakness_id":"W001","batch_index":0,"language":"python","difficulty":"hard","scenario":"demo","problem_statement":"'
+            + ("x" * 240)
+            + '","function_signature":"def solve(x: list[int]) -> int:","input_format":"list[int]","output_format":"int","constraints":["1 <= n <= 1e5"],"edge_cases_hinted":["empty input"],"anti_homogeneity_notes":"demo","input_scale_class":"scale-a","data_shape_class":"shape-a","primary_pitfall":"pitfall-a","novelty_reason":"novelty-a"}\n'
+        )
+        return SynthesisSummary(completed=1, retry_count=0, dropped=0)
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.synthesize_for_weaknesses", fake_synthesize_for_weaknesses)
+
+    exit_code = await main_with_args(
+        [
+            "--total-questions",
+            "1",
+            "--output-dir",
+            str(output_dir),
+            "--start-stage",
+            "synthesize",
+            "--attributions-file",
+            str(attributions_path),
+            "--weaknesses-file",
+            str(weaknesses_path),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 0
 
 
 @pytest.mark.asyncio

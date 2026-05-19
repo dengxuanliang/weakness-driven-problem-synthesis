@@ -158,16 +158,30 @@ def _validate_weakness_evidence_against_attributions(
     weakness_set: WeaknessSet,
     truly_failed_attributions: list[Attribution],
 ) -> None:
-    failed_ids = {item.question_id for item in truly_failed_attributions}
-    mismatched: dict[str, list[int]] = {}
+    attributions_by_id = {item.question_id: item for item in truly_failed_attributions}
+    failed_ids = set(attributions_by_id)
+    missing_question_ids: dict[str, list[int]] = {}
+    mismatched_tags: dict[str, list[int]] = {}
     for weakness in weakness_set.weaknesses:
         evidence_ids = weakness_set.evidence_question_ids.get(weakness.id, [])
         missing_ids = [question_id for question_id in evidence_ids if question_id not in failed_ids]
         if missing_ids:
-            mismatched[weakness.id] = missing_ids
+            missing_question_ids[weakness.id] = missing_ids
+            continue
 
-    if mismatched:
+        covered_tags = set(weakness.covered_tags)
+        non_overlapping_ids = []
+        for question_id in evidence_ids:
+            attribution_tags = set(attributions_by_id[question_id].error_tags)
+            if not covered_tags.intersection(attribution_tags):
+                non_overlapping_ids.append(question_id)
+        if non_overlapping_ids:
+            mismatched_tags[weakness.id] = non_overlapping_ids
+
+    if missing_question_ids:
         raise ValueError("weakness evidence question ids do not match truly failed attributions")
+    if mismatched_tags:
+        raise ValueError("weakness evidence tags do not align with attribution tags")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -222,8 +236,8 @@ def should_continue_after_estimate(*, non_interactive: bool = False) -> bool:
 
 async def main_with_args(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
-    if args.start_stage == "attribute" and not args.eval_log:
-        raise ValueError("--eval-log is required when --start-stage=attribute")
+    if args.start_stage in {"attribute", "cluster"} and not args.eval_log:
+        raise ValueError(f"--eval-log is required when --start-stage={args.start_stage}")
     if args.start_stage == "cluster" and not args.attributions_file:
         raise ValueError("--attributions-file is required when --start-stage=cluster")
     if args.start_stage == "synthesize" and not args.attributions_file:

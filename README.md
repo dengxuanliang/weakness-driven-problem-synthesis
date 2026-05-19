@@ -27,7 +27,7 @@ The pipeline has four main stages:
 CLI entrypoints currently support starting from:
 
 - `attribute`: full pipeline from eval log
-- `cluster`: reuse an existing `error_attributions.jsonl`
+- `cluster`: reuse an existing `error_attributions.jsonl` plus the original eval log for representative context
 - `synthesize`: reuse an existing `error_attributions.jsonl` and `weaknesses.json`
 
 A final export step writes `solver_view.jsonl`, which is the solver-facing artifact intended for downstream model solving.
@@ -175,6 +175,8 @@ python -m weakness_driven_problem_synthesis.run \
   --model your-model-name \
   --yes
 ```
+
+`cluster` still requires `--eval-log` because weakness clustering uses representative question context from the original evaluation records.
 
 Start directly from synthesis with existing attribution and weakness artifacts:
 
