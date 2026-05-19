@@ -299,6 +299,33 @@ async def test_complete_json_retries_403_html_from_response_object(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_complete_json_retries_403_from_status_code_attribute():
+    class Status403Provider:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, *, prompt, schema, system, max_tokens, model):
+            self.calls += 1
+            if self.calls == 1:
+                exc = RuntimeError("gateway blocked")
+                exc.status_code = 403
+                exc.response = type("Resp", (), {"text": "<html><body>Forbidden</body></html>"})()
+                raise exc
+            return '{"ok": true}'
+
+    client = Status403Provider()
+    result = await complete_json(
+        "prompt",
+        {"type": "object"},
+        provider_client=client,
+        model="test-model",
+    )
+
+    assert result == {"ok": True}
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_complete_json_global_throttler_limits_concurrent_provider_calls(monkeypatch):
     starts: list[int] = []
     finishes: list[int] = []
@@ -336,6 +363,40 @@ async def test_complete_json_global_throttler_limits_concurrent_provider_calls(m
     assert max_in_flight == 1
     assert starts == [1, 2, 3]
     assert finishes == [1, 2, 3]
+
+
+@pytest.mark.asyncio
+async def test_request_throttler_honors_burst_cooldown(monkeypatch):
+    import weakness_driven_problem_synthesis.llm_client as llm_client
+
+    monkeypatch.setattr(llm_client, "_REQUEST_THROTTLER", None)
+    monkeypatch.setenv("WEAKNESS_SYNTH_MAX_IN_FLIGHT", "1")
+    monkeypatch.setenv("WEAKNESS_SYNTH_MIN_INTERVAL_MS", "0")
+    monkeypatch.setenv("WEAKNESS_SYNTH_BURST_LIMIT", "1")
+    monkeypatch.setenv("WEAKNESS_SYNTH_BURST_COOLDOWN_MS", "200")
+
+    throttler = llm_client._get_request_throttler()
+    wait_times: list[float] = []
+    clock = {"now": 0.0}
+
+    class FakeLoop:
+        def time(self):
+            return clock["now"]
+
+    async def fake_sleep(seconds):
+        wait_times.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.llm_client.asyncio.get_running_loop", lambda: FakeLoop())
+    monkeypatch.setattr("weakness_driven_problem_synthesis.llm_client.asyncio.sleep", fake_sleep)
+
+    async with throttler:
+        pass
+    clock["now"] = 0.01
+    async with throttler:
+        pass
+
+    assert wait_times == [0.2]
 
 
 def test_request_throttler_reads_env_configuration(monkeypatch):

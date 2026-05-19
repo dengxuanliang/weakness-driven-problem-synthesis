@@ -112,6 +112,7 @@ class _RequestThrottler:
         self._lock = asyncio.Lock()
         self._last_started_at = 0.0
         self._recent_starts: list[float] = []
+        self._cooldown_until = 0.0
 
     async def __aenter__(self) -> "_RequestThrottler":
         await self._semaphore.acquire()
@@ -126,11 +127,13 @@ class _RequestThrottler:
             async with self._lock:
                 now = asyncio.get_running_loop().time()
                 self._recent_starts = [ts for ts in self._recent_starts if now - ts < 60.0]
+                cooldown_wait = max(0.0, self._cooldown_until - now)
                 interval_wait = max(0.0, self.min_interval_seconds - (now - self._last_started_at))
-                burst_wait = 0.0
-                if self.burst_limit > 0 and len(self._recent_starts) >= self.burst_limit:
-                    burst_wait = self.burst_cooldown_seconds
-                wait_for = max(interval_wait, burst_wait)
+                if self.burst_limit > 0 and len(self._recent_starts) >= self.burst_limit and cooldown_wait <= 0:
+                    self._cooldown_until = max(self._cooldown_until, now + self.burst_cooldown_seconds)
+                    self._recent_starts = []
+                    cooldown_wait = max(cooldown_wait, self.burst_cooldown_seconds)
+                wait_for = max(interval_wait, cooldown_wait)
                 if wait_for <= 0:
                     now = asyncio.get_running_loop().time()
                     self._last_started_at = now
@@ -441,9 +444,31 @@ def _looks_retryable(error: Exception) -> bool:
     retry_markers = ("rate limit", "429", "500", "502", "503", "504", "timeout", "temporarily unavailable")
     if any(marker in combined_message for marker in retry_markers):
         return True
-    if "403" in message_text and _looks_like_gateway_block_page(response_message or message_text):
-        return True
+    status_code = _extract_error_status_code(error)
+    if status_code == 403 or "403" in message_text:
+        if _looks_like_gateway_block_page(response_message or message_text):
+            return True
     return False
+
+
+def _extract_error_status_code(error: Exception) -> int | None:
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+
+    response = getattr(error, "response", None)
+    if response is not None:
+        response_status_code = getattr(response, "status_code", None)
+        if isinstance(response_status_code, int):
+            return response_status_code
+
+    resp = getattr(error, "resp", None)
+    if resp is not None:
+        resp_status_code = getattr(resp, "status_code", None)
+        if isinstance(resp_status_code, int):
+            return resp_status_code
+
+    return None
 
 
 def _extract_error_response_text(error: Exception) -> str | None:
