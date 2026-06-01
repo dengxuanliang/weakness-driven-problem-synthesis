@@ -813,6 +813,87 @@ async def test_synthesize_start_stage_accepts_matching_evidence_ids_and_tags(tmp
 
 
 @pytest.mark.asyncio
+async def test_synthesize_start_stage_loads_attributions_only_once(tmp_path, monkeypatch):
+    attributions_path = tmp_path / "error_attributions.jsonl"
+    weaknesses_path = tmp_path / "weaknesses.json"
+    output_dir = tmp_path / "out"
+    attributions_path.write_text(
+        '{"question_id":1,"is_truly_failed":true,"error_tags":["recursion:base-case-missing"],"root_cause":"bad recursion","ability_dimensions":["reasoning"],"evidence_snippet":"dfs"}\n'
+    )
+    weaknesses_path.write_text(
+        '{"weaknesses":[{"id":"W001","name":"Recursion termination","description":"recursion bugs","covered_tags":["recursion:base-case-missing"],"dominant_language":"python","dominant_category":"algorithms"}],"evidence_question_ids":{"W001":[1]}}'
+    )
+
+    load_calls = {"count": 0}
+
+    def fake_load_attributions_jsonl(*, path):
+        load_calls["count"] += 1
+        return [
+            Attribution(
+                question_id=1,
+                is_truly_failed=True,
+                error_tags=["recursion:base-case-missing"],
+                root_cause="bad recursion",
+                ability_dimensions=["reasoning"],
+                evidence_snippet="dfs",
+            )
+        ]
+
+    def fake_load_weakness_set_json(*, path):
+        return WeaknessSet(
+            weaknesses=[
+                Weakness(
+                    id="W001",
+                    name="Recursion termination",
+                    description="recursion bugs",
+                    covered_tags=["recursion:base-case-missing"],
+                    dominant_language="python",
+                    dominant_category="algorithms",
+                )
+            ],
+            evidence_question_ids={"W001": [1]},
+        )
+
+    def fake_validate_weakness_evidence_against_attributions(*, weakness_set, truly_failed_attributions):
+        assert [item.question_id for item in truly_failed_attributions] == [1]
+
+    async def fake_synthesize_for_weaknesses(weakness_set, *, allocations, output_path, provider, model, provider_client=None):
+        output_path.write_text(
+            '{"id":"S00001","weakness_id":"W001","batch_index":0,"language":"python","difficulty":"hard","scenario":"demo","problem_statement":"'
+            + ("x" * 240)
+            + '","function_signature":"def solve(x: list[int]) -> int:","input_format":"list[int]","output_format":"int","constraints":["1 <= n <= 1e5"],"edge_cases_hinted":["empty input"],"anti_homogeneity_notes":"demo","input_scale_class":"scale-a","data_shape_class":"shape-a","primary_pitfall":"pitfall-a","novelty_reason":"novelty-a"}\n'
+        )
+        return SynthesisSummary(completed=1, retry_count=0, dropped=0)
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run._load_attributions_jsonl", fake_load_attributions_jsonl)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run._load_weakness_set_json", fake_load_weakness_set_json)
+    monkeypatch.setattr(
+        "weakness_driven_problem_synthesis.run._validate_weakness_evidence_against_attributions",
+        fake_validate_weakness_evidence_against_attributions,
+    )
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.synthesize_for_weaknesses", fake_synthesize_for_weaknesses)
+
+    exit_code = await main_with_args(
+        [
+            "--total-questions",
+            "1",
+            "--output-dir",
+            str(output_dir),
+            "--start-stage",
+            "synthesize",
+            "--attributions-file",
+            str(attributions_path),
+            "--weaknesses-file",
+            str(weaknesses_path),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 0
+    assert load_calls["count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_cluster_start_stage_skips_attribution_and_uses_existing_attributions(tmp_path, monkeypatch):
     eval_log = tmp_path / "eval.jsonl"
     attributions_path = tmp_path / "error_attributions.jsonl"

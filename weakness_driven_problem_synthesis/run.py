@@ -299,9 +299,9 @@ async def main_with_args(argv: list[str]) -> int:
         )
         return 0
 
-    if args.start_stage in {"cluster", "synthesize"}:
+    if args.start_stage == "cluster":
         error_attributions = _load_attributions_jsonl(path=Path(args.attributions_file))
-    else:
+    elif args.start_stage == "attribute":
         error_attributions = await attribute_failures(
             failed_records,
             output_path=output_dir / "error_attributions.jsonl",
