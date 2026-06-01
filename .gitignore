@@ -1,5 +1,11 @@
 .worktrees/
+.venv/
 .pytest_cache/
 __pycache__/
 *.pyc
 glm51_eval_inference_merged.jsonl
+.env
+small_eval*.jsonl
+smoke_output*/
+debug*.txt
+debug*.json
