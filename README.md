@@ -32,6 +32,16 @@ CLI entrypoints currently support starting from:
 
 A final export step writes `solver_view.jsonl`, which is the solver-facing artifact intended for downstream model solving.
 
+Recent hardening includes:
+
+- one-command local bootstrap through `scripts/bootstrap.sh`
+- resumable entrypoints for `cluster` and `synthesize`
+- artifact consistency checks before synthesis-only runs
+- global LLM throttling and burst cooldowns
+- retry handling for retryable gateway block pages
+- proxy-aware OpenAI/Anthropic clients
+- oversized-record skipping and failed-attribution logging
+
 ## Input
 
 The pipeline expects an evaluation log in `jsonl` format.
@@ -56,6 +66,10 @@ A successful run may produce:
 
 - `error_attributions.jsonl`
   - per-failure structured attribution results
+- `failed_attribution_records.jsonl`
+  - failed attribution attempts that were skipped without stopping the run
+- `skipped_failed_records.jsonl`
+  - failed eval records skipped before attribution because the raw JSONL line was too large
 - `weaknesses.json`
   - clustered weakness definitions and supporting question ids
 - `synthesized_problems.jsonl`
@@ -87,15 +101,24 @@ Internal synthesis-only fields such as `edge_cases_hinted` are intentionally exc
 
 Python 3.11+ is required.
 
-Install dependencies:
+One-command bootstrap:
 
 ```bash
+bash scripts/bootstrap.sh
+```
+
+Manual install:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
 For development:
 
 ```bash
+source .venv/bin/activate
 pip install -e .[dev]
 ```
 
@@ -122,6 +145,22 @@ Optional debug dump path:
 
 ```bash
 export WEAKNESS_SYNTH_DEBUG_PATH=debug_invalid_json.txt
+```
+
+Optional proxy configuration is supported through standard proxy environment variables or `.env` entries:
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:7890
+export HTTP_PROXY=http://127.0.0.1:7890
+```
+
+Optional LLM request throttling controls:
+
+```bash
+export WEAKNESS_SYNTH_MAX_IN_FLIGHT=2
+export WEAKNESS_SYNTH_MIN_INTERVAL_MS=150
+export WEAKNESS_SYNTH_BURST_LIMIT=12
+export WEAKNESS_SYNTH_BURST_COOLDOWN_MS=1200
 ```
 
 The loader checks environment variables first. If a required value is missing, it falls back to the repository-root `.env` file. `.env` never overrides an already-set environment variable.
@@ -192,6 +231,12 @@ python -m weakness_driven_problem_synthesis.run \
   --yes
 ```
 
+The synthesis-only entrypoint validates the supplied artifacts before generating:
+
+- every `weaknesses.json` evidence question id must appear in truly failed attributions
+- each evidence attribution must share at least one tag with the weakness `covered_tags`
+- mismatched artifacts fail fast instead of silently producing misaligned problems
+
 ## Resume and Restart Behavior
 
 By default, the pipeline runs with resume enabled.
@@ -201,6 +246,8 @@ By default, the pipeline runs with resume enabled.
 - `--restart` removes the entire output directory before starting
 
 If a run exits through an empty-analysis path, stale downstream synthesis artifacts are cleaned automatically.
+
+Input records larger than 1 MB are skipped before attribution and recorded in `skipped_failed_records.jsonl`. Single attribution failures are recorded in `failed_attribution_records.jsonl` and do not stop the whole run.
 
 ## Notes on Diversity Control
 
@@ -215,6 +262,17 @@ Current controls include:
 - soft rejection of reused shape/scale combinations with similar statements
 
 The target behavior is diversified weakness-aligned generation, not exact template variation.
+
+## Skill Usage
+
+This repository is both a Python package and a Codex/Claude-style skill.
+
+- `SKILL.md` describes when the skill should be used
+- `references/` contains prompt and vocabulary assets
+- `weakness_driven_problem_synthesis/` contains the implementation package
+- `scripts/run.py` is a thin CLI wrapper
+
+After bootstrap or install, run the CLI from the repository root or from any environment where the package is installed.
 
 ## Testing
 
