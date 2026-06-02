@@ -9,3 +9,4 @@ small_eval*.jsonl
 smoke_output*/
 debug*.txt
 debug*.json
+recycle/

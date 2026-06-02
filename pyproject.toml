@@ -1,0 +1,20 @@
+[project]
+name = "weakness-driven-problem-synthesis"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "anthropic>=0.57.0",
+  "openai>=1.99.0",
+  "pydantic>=2.11.0",
+  "tqdm>=4.67.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.1.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["weakness_driven_problem_synthesis*"]
+exclude = ["scripts*", "tests*"]

@@ -21,13 +21,16 @@ handled by a separate downstream skill.
 
 | Param             | Required | Default                  | Notes                                                              |
 | ----------------- | -------- | ------------------------ | ------------------------------------------------------------------ |
-| `eval_log_path`   | yes      | —                        | Path to jsonl. Must contain `content`, `canonical_solution`, `completion`, `test`, `labels`, `pass_at_1`. |
+| `eval_log_path`   | stage-dependent | —                 | Required for `attribute` and `cluster`. Not required for `synthesize`. Path to jsonl containing `content`, `canonical_solution`, `completion`, `test`, `labels`, `pass_at_1`. |
 | `total_questions` | yes      | —                        | Target total count of synthesized problem statements.              |
 | `output_dir`      | no       | `./synthesis_output/`    | All artifacts written here.                                        |
 | `provider`        | no       | `anthropic`              | `anthropic` or `openai`.                                           |
 | `model`           | no       | provider default         | Overrides default model (`claude-opus-4-6` / `gpt-4o`).            |
 | `concurrency`     | no       | `8`                      | Max parallel LLM calls in attribution stage.                       |
 | `resume`          | no       | `true`                   | Reuse existing stage artifacts in `output_dir`.                    |
+| `start_stage`     | no       | `attribute`              | One of `attribute`, `cluster`, `synthesize`. Controls which stage is resumed. |
+| `attributions_file` | stage-dependent | —                | Required for `cluster` and `synthesize`. Reuses `error_attributions.jsonl`. |
+| `weaknesses_file` | stage-dependent | —                    | Required for `synthesize`. Reuses `weaknesses.json`.               |
 
 API keys come from environment variables: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `OPENAI_BASE_URL` (optional, for OpenAI-compatible endpoints).
@@ -38,12 +41,19 @@ API keys come from environment variables: `ANTHROPIC_API_KEY`,
 - `weaknesses.json` — clustered weakness list (15–40 items).
 - `synthesized_problems.jsonl` — final problem statements.
 - `report.md` — human-readable summary.
+- `solver_view.jsonl` — solver-facing export of synthesized problems.
 
 ## 3. Pipeline
 
 ```
 load_filter → attribute → cluster → allocate → synthesize → report
 ```
+
+Stage entrypoints:
+
+- `attribute`: runs the full pipeline from the eval log.
+- `cluster`: skips attribution and reuses an existing `error_attributions.jsonl`, but still requires the original eval log for representative question context.
+- `synthesize`: skips attribution and clustering, reuses existing `error_attributions.jsonl` and `weaknesses.json`, and starts directly at quota allocation plus synthesis.
 
 ### 3.1 Load & Filter
 
@@ -107,6 +117,8 @@ No external embeddings. Procedure:
 
 Output: `weaknesses.json` (the clusters plus the evidence map).
 
+When resuming from `cluster`, the same `weaknesses.json` artifact is reused if it already exists. When resuming from `synthesize`, clustering is skipped entirely and `weaknesses.json` must already be present.
+
 ### 3.4 Quota Allocation
 
 ```
@@ -155,9 +167,24 @@ Per-batch prompt contains:
     "output_format": "...",
     "constraints": ["1 <= len(events) <= 1e5", "..."],
     "edge_cases_hinted": ["empty input", "duplicate timestamps"],
-    "anti_homogeneity_notes": "differs from S00003: sliding window vs full bucketing"
+    "anti_homogeneity_notes": "differs from S00003: sliding window vs full bucketing",
+    "input_scale_class": "1e5-event-stream",
+    "data_shape_class": "nested-records",
+    "primary_pitfall": "ordering-stability",
+    "novelty_reason": "Focuses on stable online compaction rather than batch aggregation."
   }
   ```
+
+Additional structured diversity fields are part of the persisted problem schema:
+
+- `input_scale_class` — short label for scale profile, e.g. `1e5-sequence`,
+  `sparse-graph`, `event-stream`
+- `data_shape_class` — short label for dominant structure, e.g. `flat-array`,
+  `nested-records`, `tree`, `graph`
+- `primary_pitfall` — short label for the main failure mode the problem is
+  designed to trigger
+- `novelty_reason` — one-sentence explanation of why the problem is not
+  redundant with prior or same-batch items
 
 Ordering: weaknesses run **sequentially** (one weakness at a time). Inside a
 weakness, batches are also sequential so each new batch sees the running
@@ -183,8 +210,11 @@ Two layers, lightweight only:
      regenerate.
    - Per-slot retry budget: 3. After 3 failures the slot is dropped and an
      extra batch is queued at the end of the weakness to refill the quota.
-   - Cross-weakness dedup: only `(scenario, function_signature)` exact-key
-     check (avoids excessive cross-weakness similarity work).
+- Cross-weakness dedup: only `(scenario, function_signature)` exact-key
+  check (avoids excessive cross-weakness similarity work).
+- When starting from `synthesize`, the pipeline validates that the provided
+  `weaknesses.json` is consistent with the supplied `error_attributions.jsonl`
+  before any synthesis calls are made.
 
 No execution of code. No reference solutions. No test cases.
 
@@ -196,6 +226,7 @@ No execution of code. No reference solutions. No test cases.
 - Top-N weakness table: name, evidence count, allocated quota, completed.
 - One sampled problem statement (first ~200 chars) per weakness.
 - Skip / retry / drop counters.
+- A solver view export is written alongside the report whenever synthesis succeeds.
 
 ## 4. Engineering Layout
 
@@ -244,7 +275,9 @@ async def complete_json(prompt: str, schema: dict, *, system: str | None = None,
 - Each stage writes to its own file. On startup, if the file exists and
   `--resume` (default true), the stage skips already-completed items:
   - `error_attributions.jsonl`: dedup by `question_id`.
-  - `weaknesses.json`: present → skip clustering entirely.
+- `weaknesses.json`: present → skip clustering entirely.
+- `--start-stage=cluster`: requires `--eval-log` and `--attributions-file`.
+- `--start-stage=synthesize`: requires `--attributions-file` and `--weaknesses-file`.
   - `synthesized_problems.jsonl`: dedup by `(weakness_id, batch_index)`;
     weaknesses with `alloc` already met are skipped.
 - `--restart` deletes prior artifacts and re-runs from scratch.
@@ -286,6 +319,9 @@ Frontmatter `description`:
 - **LLM clustering instability**: same input may produce different cluster
   counts/names across runs. Mitigation: clustering is deterministic per
   `output_dir` once `weaknesses.json` exists (resume semantics).
+- **Artifact mismatch when resuming from synthesis**: a stale `weaknesses.json`
+  may no longer match the supplied attributions. Mitigation: `synthesize`
+  entrypoint validates evidence ids and tag overlap before generating problems.
 - **Quota refill loops**: pathological weaknesses where the model keeps
   producing duplicates could loop. Mitigation: per-weakness max additional
   batches = 2; if still short, the report flags the shortfall instead of

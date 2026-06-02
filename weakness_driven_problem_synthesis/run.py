@@ -1,0 +1,379 @@
+"""CLI entrypoint for the synthesis pipeline."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import shutil
+import sys
+from pathlib import Path
+
+from weakness_driven_problem_synthesis.allocate import allocate_quotas
+from weakness_driven_problem_synthesis.attribute import attribute_failures
+from weakness_driven_problem_synthesis.cluster import cluster_weaknesses
+from weakness_driven_problem_synthesis.load_filter import FailedRecordCandidate, load_failed_record_candidates
+from weakness_driven_problem_synthesis.report import write_report
+from weakness_driven_problem_synthesis.schemas import Attribution, SynthesisSummary, WeaknessSet
+from weakness_driven_problem_synthesis.solver_view import write_solver_view
+from weakness_driven_problem_synthesis.synthesize import synthesize_for_weaknesses
+
+MAX_FAILED_RECORD_BYTES = 1_000_000
+STAGE_ARTIFACTS = (
+    "error_attributions.jsonl",
+    "failed_attribution_records.jsonl",
+    "skipped_failed_records.jsonl",
+    "weaknesses.json",
+    "synthesized_problems.jsonl",
+    "solver_view.jsonl",
+    "report.md",
+)
+
+
+def _validate_allocations(allocations: dict[str, int], *, total_questions: int) -> None:
+    if any(value < 0 for value in allocations.values()):
+        raise ValueError("allocations must not contain negative quotas")
+    if sum(allocations.values()) != total_questions:
+        raise ValueError("allocations must sum to total_questions")
+
+
+def _empty_synthesis_summary() -> SynthesisSummary:
+    return SynthesisSummary(completed=0, retry_count=0)
+
+
+def _empty_weakness_set() -> WeaknessSet:
+    return WeaknessSet(weaknesses=[], evidence_question_ids={})
+
+
+def _write_empty_weaknesses_artifact(*, output_path: Path) -> None:
+    output_path.write_text(_empty_weakness_set().model_dump_json(indent=2))
+
+
+def _clear_stale_outputs_for_empty_run(*, output_dir: Path) -> None:
+    for artifact_name in (
+        "error_attributions.jsonl",
+        "synthesized_problems.jsonl",
+        "solver_view.jsonl",
+    ):
+        artifact_path = output_dir / artifact_name
+        if artifact_path.exists():
+            artifact_path.unlink()
+
+
+def _write_empty_report(*, report_path: Path, failed_count: int) -> None:
+    write_report(
+        report_path=report_path,
+        failed_count=failed_count,
+        failed_records_skipped_before_attribution=0,
+        weakness_set=_empty_weakness_set(),
+        allocations={},
+        synthesis_summary=_empty_synthesis_summary(),
+        sampled_problems={},
+    )
+
+
+def _partition_failed_records_by_size(
+    candidates: list[FailedRecordCandidate],
+    *,
+    max_record_bytes: int,
+) -> tuple[list, list[dict[str, object]]]:
+    eligible_records = []
+    skipped_records = []
+    for candidate in candidates:
+        if candidate.raw_size_bytes > max_record_bytes:
+            skipped_records.append(
+                {
+                    "question_id": candidate.record.question_id,
+                    "reason": "record_too_large",
+                    "record_size_bytes": candidate.raw_size_bytes,
+                }
+            )
+            continue
+        eligible_records.append(candidate.record)
+    return eligible_records, skipped_records
+
+
+def _write_skipped_failed_records(*, output_path: Path, skipped_records: list[dict[str, object]]) -> None:
+    if not skipped_records:
+        if output_path.exists():
+            output_path.unlink()
+        return
+    with output_path.open("w") as handle:
+        for item in skipped_records:
+            handle.write(json.dumps(item) + "\n")
+
+
+def _load_attributions_jsonl(*, path: Path) -> list[Attribution]:
+    if not path.exists():
+        raise ValueError(f"attributions file does not exist: {path}")
+
+    attributions: list[Attribution] = []
+    with path.open() as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            if not raw_line.strip():
+                continue
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid attribution JSONL at line {line_number}: {exc.msg}") from exc
+            try:
+                attributions.append(Attribution.model_validate(payload))
+            except Exception as exc:
+                raise ValueError(f"invalid attribution record at line {line_number}: {exc}") from exc
+
+    if not attributions:
+        raise ValueError(f"attributions file is empty: {path}")
+    return attributions
+
+
+def _load_weakness_set_json(*, path: Path) -> WeaknessSet:
+    if not path.exists():
+        raise ValueError(f"weaknesses file does not exist: {path}")
+
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid weaknesses JSON: {exc.msg}") from exc
+
+    try:
+        weakness_set = WeaknessSet.model_validate(payload)
+    except Exception as exc:
+        raise ValueError(f"invalid weaknesses artifact: {exc}") from exc
+
+    if not weakness_set.weaknesses:
+        raise ValueError("weaknesses file must contain at least one weakness")
+    if not weakness_set.evidence_question_ids:
+        raise ValueError("weaknesses file must contain evidence_question_ids")
+
+    for weakness in weakness_set.weaknesses:
+        evidence_ids = weakness_set.evidence_question_ids.get(weakness.id)
+        if not evidence_ids:
+            raise ValueError(f"weaknesses file is missing evidence_question_ids for {weakness.id}")
+
+    return weakness_set
+
+
+def _validate_weakness_evidence_against_attributions(
+    *,
+    weakness_set: WeaknessSet,
+    truly_failed_attributions: list[Attribution],
+) -> None:
+    attributions_by_id = {item.question_id: item for item in truly_failed_attributions}
+    failed_ids = set(attributions_by_id)
+    missing_question_ids: dict[str, list[int]] = {}
+    mismatched_tags: dict[str, list[int]] = {}
+    for weakness in weakness_set.weaknesses:
+        evidence_ids = weakness_set.evidence_question_ids.get(weakness.id, [])
+        missing_ids = [question_id for question_id in evidence_ids if question_id not in failed_ids]
+        if missing_ids:
+            missing_question_ids[weakness.id] = missing_ids
+            continue
+
+        covered_tags = set(weakness.covered_tags)
+        non_overlapping_ids = []
+        for question_id in evidence_ids:
+            attribution_tags = set(attributions_by_id[question_id].error_tags)
+            if not covered_tags.intersection(attribution_tags):
+                non_overlapping_ids.append(question_id)
+        if non_overlapping_ids:
+            mismatched_tags[weakness.id] = non_overlapping_ids
+
+    if missing_question_ids:
+        raise ValueError("weakness evidence question ids do not match truly failed attributions")
+    if mismatched_tags:
+        raise ValueError("weakness evidence tags do not align with attribution tags")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--eval-log")
+    parser.add_argument("--total-questions", type=int, required=True)
+    parser.add_argument("--output-dir", default="./synthesis_output")
+    parser.add_argument("--provider", default="anthropic")
+    parser.add_argument("--model")
+    parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--start-stage", choices=("attribute", "cluster", "synthesize"), default="attribute")
+    parser.add_argument("--attributions-file")
+    parser.add_argument("--weaknesses-file")
+    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--restart", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+    return parser
+
+
+def prepare_output_dir(output_dir: Path, *, restart: bool, resume: bool = True) -> Path:
+    if restart and output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if not resume:
+        for artifact_name in STAGE_ARTIFACTS:
+            artifact_path = output_dir / artifact_name
+            if artifact_path.exists():
+                artifact_path.unlink()
+    return output_dir
+
+
+def estimate_call_counts(
+    *,
+    failed_count: int,
+    total_questions: int,
+    batch_size: int = 10,
+    start_stage: str = "attribute",
+) -> dict[str, int]:
+    synthesis_batches = 0 if failed_count <= 0 else (total_questions + batch_size - 1) // batch_size
+    return {
+        "attribution_calls": 0 if start_stage in {"cluster", "synthesize"} else failed_count,
+        "synthesis_batches": synthesis_batches,
+    }
+
+
+def should_continue_after_estimate(*, non_interactive: bool = False) -> bool:
+    if non_interactive:
+        return True
+    answer = input("Proceed with synthesis? [y/N]: ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+async def main_with_args(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+    if args.start_stage in {"attribute", "cluster"} and not args.eval_log:
+        raise ValueError(f"--eval-log is required when --start-stage={args.start_stage}")
+    if args.start_stage == "cluster" and not args.attributions_file:
+        raise ValueError("--attributions-file is required when --start-stage=cluster")
+    if args.start_stage == "synthesize" and not args.attributions_file:
+        raise ValueError("--attributions-file is required when --start-stage=synthesize")
+    if args.start_stage == "synthesize" and not args.weaknesses_file:
+        raise ValueError("--weaknesses-file is required when --start-stage=synthesize")
+
+    output_dir = prepare_output_dir(Path(args.output_dir), restart=args.restart, resume=args.resume)
+    failed_candidates: list[FailedRecordCandidate] = []
+    failed_records = []
+    skipped_failed_records: list[dict[str, object]] = []
+    error_attributions: list[Attribution] | None = None
+    truly_failed_attributions: list[Attribution] | None = None
+    weakness_set: WeaknessSet | None = None
+
+    if args.eval_log:
+        failed_candidates = list(load_failed_record_candidates(Path(args.eval_log)))
+        failed_records, skipped_failed_records = _partition_failed_records_by_size(
+            failed_candidates,
+            max_record_bytes=MAX_FAILED_RECORD_BYTES,
+        )
+    if args.start_stage == "synthesize":
+        error_attributions = _load_attributions_jsonl(path=Path(args.attributions_file))
+        truly_failed_attributions = [item for item in error_attributions if item.is_truly_failed]
+        weakness_set = _load_weakness_set_json(path=Path(args.weaknesses_file))
+        _validate_weakness_evidence_against_attributions(
+            weakness_set=weakness_set,
+            truly_failed_attributions=truly_failed_attributions,
+        )
+
+    skipped_failed_records_path = output_dir / "skipped_failed_records.jsonl"
+    _write_skipped_failed_records(output_path=skipped_failed_records_path, skipped_records=skipped_failed_records)
+    failed_count = len(failed_candidates) if args.start_stage != "synthesize" else len(error_attributions)
+    estimates = estimate_call_counts(
+        failed_count=len(failed_records) if args.start_stage != "synthesize" else len(truly_failed_attributions),
+        total_questions=args.total_questions,
+        start_stage=args.start_stage,
+    )
+    print(
+        "Pre-flight estimate: "
+        f"{estimates['attribution_calls']} attribution calls, "
+        f"{estimates['synthesis_batches']} synthesis batches"
+    )
+    if not should_continue_after_estimate(non_interactive=args.yes):
+        return 1
+
+    report_path = output_dir / "report.md"
+    if args.start_stage == "attribute" and not failed_records:
+        _clear_stale_outputs_for_empty_run(output_dir=output_dir)
+        _write_empty_weaknesses_artifact(output_path=output_dir / "weaknesses.json")
+        write_report(
+            report_path=report_path,
+            failed_count=failed_count,
+            failed_records_skipped_before_attribution=len(skipped_failed_records),
+            weakness_set=_empty_weakness_set(),
+            allocations={},
+            synthesis_summary=_empty_synthesis_summary(),
+            sampled_problems={},
+        )
+        return 0
+
+    if args.start_stage == "cluster":
+        error_attributions = _load_attributions_jsonl(path=Path(args.attributions_file))
+    elif args.start_stage == "attribute":
+        error_attributions = await attribute_failures(
+            failed_records,
+            output_path=output_dir / "error_attributions.jsonl",
+            failed_output_path=output_dir / "failed_attribution_records.jsonl",
+            provider=args.provider,
+            model=args.model,
+            concurrency=args.concurrency,
+        )
+    if truly_failed_attributions is None:
+        truly_failed_attributions = [item for item in error_attributions if item.is_truly_failed]
+    if not truly_failed_attributions:
+        _clear_stale_outputs_for_empty_run(output_dir=output_dir)
+        _write_empty_weaknesses_artifact(output_path=output_dir / "weaknesses.json")
+        write_report(
+            report_path=report_path,
+            failed_count=failed_count,
+            failed_records_skipped_before_attribution=len(skipped_failed_records),
+            weakness_set=_empty_weakness_set(),
+            allocations={},
+            synthesis_summary=_empty_synthesis_summary(),
+            sampled_problems={},
+        )
+        return 0
+
+    if args.start_stage != "synthesize":
+        weakness_set = await cluster_weaknesses(
+            truly_failed_attributions,
+            eval_records=failed_records,
+            output_path=output_dir / "weaknesses.json",
+            provider=args.provider,
+            model=args.model,
+        )
+    assert weakness_set is not None
+    allocations = allocate_quotas(
+        {weakness.id: len(weakness_set.evidence_question_ids.get(weakness.id, [])) for weakness in weakness_set.weaknesses},
+        args.total_questions,
+    )
+    _validate_allocations(allocations, total_questions=args.total_questions)
+    synthesis_summary = await synthesize_for_weaknesses(
+        weakness_set,
+        allocations=allocations,
+        output_path=output_dir / "synthesized_problems.jsonl",
+        provider=args.provider,
+        model=args.model,
+    )
+    sampled = {}
+    synth_path = output_dir / "synthesized_problems.jsonl"
+    if synth_path.exists():
+        write_solver_view(
+            synthesized_path=synth_path,
+            solver_view_path=output_dir / "solver_view.jsonl",
+        )
+        with synth_path.open() as handle:
+            for raw_line in handle:
+                if raw_line.strip():
+                    item = json.loads(raw_line)
+                    sampled.setdefault(item["weakness_id"], item["problem_statement"][:200])
+    write_report(
+        report_path=report_path,
+        failed_count=failed_count,
+        failed_records_skipped_before_attribution=len(skipped_failed_records),
+        weakness_set=weakness_set,
+        allocations=allocations,
+        synthesis_summary=synthesis_summary,
+        sampled_problems=sampled,
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    return asyncio.run(main_with_args(argv if argv is not None else sys.argv[1:]))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

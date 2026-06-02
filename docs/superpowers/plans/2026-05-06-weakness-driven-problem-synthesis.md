@@ -4,7 +4,7 @@
 
 **Goal:** Build a resumable skill that reads an evaluation jsonl log and produces high-difficulty, deduplicated coding problem statements targeting observed model weaknesses.
 
-**Architecture:** Implement a repo-local skill package at `weakness-driven-problem-synthesis/` that mirrors the final installed skill layout from the spec. The pipeline stays file-oriented and stage-based: load/filter failed eval records, attribute root causes with an async LLM client, cluster weaknesses, allocate quotas, synthesize problems with lightweight QA/dedup, then emit a markdown report. Every stage is resumable through stage artifacts under a user-provided output directory.
+**Architecture:** Implement a repo-local skill package at `weakness-driven-problem-synthesis/` that mirrors the final installed skill layout from the spec. The pipeline stays file-oriented and stage-based: load/filter failed eval records, attribute root causes with an async LLM client, cluster weaknesses, allocate quotas, synthesize problems with lightweight QA/dedup, then emit a markdown report plus `solver_view.jsonl`. Every stage is resumable through stage artifacts under a user-provided output directory, with explicit entrypoints for `attribute`, `cluster`, and `synthesize`.
 
 **Tech Stack:** Python 3.11+, pydantic, pytest, pytest-asyncio, anthropic SDK, openai SDK
 
@@ -37,6 +37,16 @@
 - Create: `weakness-driven-problem-synthesis/tests/test_synthesize.py`
 - Create: `weakness-driven-problem-synthesis/tests/test_report.py`
 - Create: `weakness-driven-problem-synthesis/tests/test_run.py`
+
+## Delivery Notes
+
+- `--start-stage=attribute`: requires `--eval-log`; runs the full pipeline.
+- `--start-stage=cluster`: requires both `--eval-log` and `--attributions-file`; reuses `error_attributions.jsonl` but still needs eval-log context for representative question summaries.
+- `--start-stage=synthesize`: requires `--attributions-file` and `--weaknesses-file`; starts directly from allocation and synthesis.
+- `synthesize` entry must validate that `weaknesses.json` is consistent with `error_attributions.jsonl` before any LLM synthesis call:
+  - every `evidence_question_id` must exist in truly-failed attributions
+  - every evidence attribution must share at least one tag with `weakness.covered_tags`
+- Successful synthesis runs must emit both `report.md` and `solver_view.jsonl`.
 
 ### Task 1: Bootstrap The Skill Package
 

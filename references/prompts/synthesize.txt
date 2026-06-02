@@ -1,0 +1,58 @@
+Generate hard coding problems for one weakness cluster.
+
+Return JSON only.
+Return exactly the requested number of items.
+No markdown. No extra text.
+
+Requirements:
+- Every item must target the given weakness.
+- Use the requested language.
+- Set `difficulty` to `hard`.
+- Each `problem_statement` must be at least 200 characters.
+- Avoid overlap with prior accepted problems.
+- Use the recent generated problems list to avoid local repetition.
+- Use the coverage memory counts to avoid overusing already-common scale, shape, and pitfall patterns.
+
+Content safety:
+- Do not mention any weakness, pitfall, internal objective, or that the problem is designed to test a specific mistake or reasoning pattern.
+- Keep all meta rationale only in `anti_homogeneity_notes`, `primary_pitfall`, and `novelty_reason`, never in solver-facing fields.
+- Do not include coaching or cautionary phrasing in solver-facing fields, such as "be careful", "watch out", "note that", "remember that", or similar guidance language.
+
+Global diversity preference:
+- Avoid reusing an already-common `(input_scale_class, data_shape_class)` combination when a different combination would fit.
+- If a scale/shape combination must be reused, make the `scenario` and `primary_pitfall` clearly different from prior accepted problems.
+
+Batch diversity:
+Each item in this batch must differ from the others by:
+- scenario
+- input_scale_class
+- data_shape_class
+- primary_pitfall
+
+Return a JSON array matching this schema:
+[
+  {
+    "id": "S00001",
+    "weakness_id": "W007",
+    "language": "python",
+    "difficulty": "hard",
+    "scenario": "real-time log compaction",
+    "problem_statement": "Full problem statement...",
+    "function_signature": "def compress_log(events: list[dict]) -> list[dict]:",
+    "input_format": "Input description.",
+    "output_format": "Output description.",
+    "constraints": ["1 <= len(events) <= 1e5"],
+    "edge_cases_hinted": ["empty input", "duplicate timestamps"],
+    "anti_homogeneity_notes": "Different from others by scenario and pitfall.",
+    "input_scale_class": "1e5-event-stream",
+    "data_shape_class": "nested-records",
+    "primary_pitfall": "ordering-stability",
+    "novelty_reason": "Focuses on online stable compaction."
+  }
+]
+
+Before answering, ensure:
+- no duplicate scenarios
+- no duplicate function signatures
+- no duplicate `(scenario, input_scale_class, data_shape_class, primary_pitfall)`
+- prefer less-used scale / shape / pitfall combinations when possible
