@@ -87,9 +87,17 @@ Internal synthesis-only fields such as `edge_cases_hinted` are intentionally exc
 
 Python 3.11+ is required.
 
-Install dependencies:
+One-command bootstrap:
 
 ```bash
+bash scripts/bootstrap.sh
+```
+
+Manual install:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
 ```
 
