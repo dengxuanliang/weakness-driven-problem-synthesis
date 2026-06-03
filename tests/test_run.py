@@ -37,6 +37,7 @@ def test_cli_parses_expected_arguments():
     args = build_parser().parse_args(["--eval-log", "eval.jsonl", "--total-questions", "500"])
     assert args.eval_log == "eval.jsonl"
     assert args.total_questions == 500
+    assert args.provider == "openai"
     assert args.resume is True
     assert args.start_stage == "attribute"
 

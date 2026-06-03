@@ -168,13 +168,15 @@ export HTTP_PROXY=http://127.0.0.1:7890
 Optional LLM request throttling controls:
 
 ```bash
-export WEAKNESS_SYNTH_MAX_IN_FLIGHT=2
+export WEAKNESS_SYNTH_MAX_IN_FLIGHT=8
 export WEAKNESS_SYNTH_MIN_INTERVAL_MS=150
 export WEAKNESS_SYNTH_BURST_LIMIT=12
 export WEAKNESS_SYNTH_BURST_COOLDOWN_MS=1200
 ```
 
 The loader checks environment variables first. If a required value is missing, it falls back to the repository-root `.env` file. `.env` never overrides an already-set environment variable.
+
+The default provider is `openai`. Pass `--provider anthropic` if you want to use the Anthropic client path instead.
 
 Model selection priority is:
 
@@ -199,6 +201,8 @@ python -m weakness_driven_problem_synthesis.run \
   --model your-model-name \
   --yes
 ```
+
+If you use the default OpenAI-compatible path, `--provider` may be omitted.
 
 Or use the script wrapper:
 
