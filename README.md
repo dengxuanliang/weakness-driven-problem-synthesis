@@ -107,6 +107,17 @@ One-command bootstrap:
 bash scripts/bootstrap.sh
 ```
 
+If `.env` does not already exist, the bootstrap script creates an empty `.env`
+template containing:
+
+```env
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+OPENAI_MODEL=
+```
+
+Existing `.env` files are never overwritten.
+
 Manual install:
 
 ```bash
