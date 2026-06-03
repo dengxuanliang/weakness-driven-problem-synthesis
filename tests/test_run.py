@@ -25,6 +25,14 @@ def test_skill_package_files_exist():
     assert (root / "references" / "prompts" / "attribute.txt").exists()
 
 
+def test_bootstrap_script_mentions_env_template_keys():
+    root = Path(__file__).resolve().parents[1]
+    script_text = (root / "scripts" / "bootstrap.sh").read_text()
+    assert "OPENAI_API_KEY=" in script_text
+    assert "OPENAI_BASE_URL=" in script_text
+    assert "OPENAI_MODEL=" in script_text
+
+
 def test_cli_parses_expected_arguments():
     args = build_parser().parse_args(["--eval-log", "eval.jsonl", "--total-questions", "500"])
     assert args.eval_log == "eval.jsonl"
