@@ -189,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-log")
     parser.add_argument("--total-questions", type=int, required=True)
     parser.add_argument("--output-dir", default="./synthesis_output")
-    parser.add_argument("--provider", default="anthropic")
+    parser.add_argument("--provider", default="openai")
     parser.add_argument("--model")
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--start-stage", choices=("attribute", "cluster", "synthesize"), default="attribute")

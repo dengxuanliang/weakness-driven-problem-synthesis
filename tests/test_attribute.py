@@ -415,6 +415,19 @@ def test_request_throttler_reads_env_configuration(monkeypatch):
     assert throttler.burst_cooldown_seconds == 0.9
 
 
+def test_request_throttler_uses_updated_default_max_in_flight(monkeypatch):
+    monkeypatch.delenv("WEAKNESS_SYNTH_MAX_IN_FLIGHT", raising=False)
+    monkeypatch.delenv("WEAKNESS_SYNTH_MIN_INTERVAL_MS", raising=False)
+    monkeypatch.delenv("WEAKNESS_SYNTH_BURST_LIMIT", raising=False)
+    monkeypatch.delenv("WEAKNESS_SYNTH_BURST_COOLDOWN_MS", raising=False)
+    monkeypatch.setattr("weakness_driven_problem_synthesis.llm_client._REQUEST_THROTTLER", None)
+
+    from weakness_driven_problem_synthesis.llm_client import _get_request_throttler
+
+    throttler = _get_request_throttler()
+    assert throttler.max_in_flight == 8
+
+
 def test_missing_api_key_fails_fast(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(RuntimeError):

@@ -166,7 +166,7 @@ def _get_request_throttler() -> _RequestThrottler:
     global _REQUEST_THROTTLER
     if _REQUEST_THROTTLER is None:
         _REQUEST_THROTTLER = _RequestThrottler(
-            max_in_flight=max(1, _read_int_env("WEAKNESS_SYNTH_MAX_IN_FLIGHT", 2)),
+            max_in_flight=max(1, _read_int_env("WEAKNESS_SYNTH_MAX_IN_FLIGHT", 8)),
             min_interval_seconds=max(0.0, _read_float_env("WEAKNESS_SYNTH_MIN_INTERVAL_MS", 150.0) / 1000.0),
             burst_limit=max(1, _read_int_env("WEAKNESS_SYNTH_BURST_LIMIT", 12)),
             burst_cooldown_seconds=max(0.0, _read_float_env("WEAKNESS_SYNTH_BURST_COOLDOWN_MS", 1200.0) / 1000.0),
