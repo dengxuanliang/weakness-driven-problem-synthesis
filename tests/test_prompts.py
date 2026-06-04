@@ -55,3 +55,23 @@ def test_cluster_prompt_includes_grouping_and_granularity_guidance():
         in prompt
     )
     assert "- Do not collapse clearly different weaknesses into one bucket." in prompt
+
+
+def test_cluster_refine_prompt_constrains_local_candidate_review():
+    prompt = load_prompt("cluster_refine.txt")
+
+    assert "Return JSON only as an array of objects with:" in prompt
+    assert "- Review only the provided candidate cluster; do not invent outside evidence." in prompt
+    assert "- If the candidate cluster is coherent, return exactly one weakness." in prompt
+    assert "- Prefer conservative splitting over incorrect merging." in prompt
+    assert "- `covered_tags` must be chosen only from the provided candidate tags." in prompt
+
+
+def test_cluster_merge_prompt_constrains_pairwise_merge_decisions():
+    prompt = load_prompt("cluster_merge.txt")
+
+    assert "Return JSON only as an object with:" in prompt
+    assert "- `should_merge`" in prompt
+    assert "- `merged_weakness`" in prompt
+    assert "- Merge only when both clusters reflect the same underlying weakness." in prompt
+    assert "- Be conservative: when uncertain, do not merge." in prompt

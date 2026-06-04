@@ -6,6 +6,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from weakness_driven_problem_synthesis.cluster_merge import merge_refined_clusters
+from weakness_driven_problem_synthesis.cluster_precluster import build_cluster_units, propose_candidate_clusters
+from weakness_driven_problem_synthesis.cluster_refine import refine_candidate_clusters
 from weakness_driven_problem_synthesis.llm_client import complete_json
 from weakness_driven_problem_synthesis.prompts import load_prompt
 from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord, Weakness, WeaknessSet
@@ -13,6 +16,23 @@ from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord, W
 CLUSTER_PROMPT_MAX_CHARS = 25_000
 MERGE_BLOCK_MAX_TAGS = 8
 MERGE_BLOCK_MAX_TAG_CHARS = 8_000
+LARGE_INPUT_TAG_THRESHOLD = 12
+
+
+def _build_progress_bar(*, total: int, initial: int, desc: str, unit: str) -> Any:
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        return _NullProgressBar()
+    return tqdm(total=total, initial=initial, desc=desc, unit=unit)
+
+
+class _NullProgressBar:
+    def update(self, value: int) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
 
 
 def _expect_array_payload(payload: Any, *, stage: str) -> list[dict[str, Any]]:
@@ -227,7 +247,6 @@ async def cluster_weaknesses(
         weakness_set = WeaknessSet.model_validate_json(output_path.read_text())
         return _validate_weakness_set(weakness_set, attributions=attributions)
 
-    prompt_template = load_prompt("cluster.txt")
     records_by_id = {record.question_id: record for record in eval_records if record.question_id is not None}
     tag_summaries: dict[str, list[dict[str, object]]] = {}
     for attribution in attributions:
@@ -251,42 +270,71 @@ async def cluster_weaknesses(
                     }
                 )
 
-    blocks = _render_tag_summary_blocks(tag_summaries)
-    chunks = _chunk_blocks_by_char_budget(
-        prompt_template=prompt_template,
-        blocks=blocks,
-        budget_chars=CLUSTER_PROMPT_MAX_CHARS,
-    )
     min_items = 1 if attributions else 0
-    if not chunks:
-        weaknesses: list[Weakness] = []
-    elif len(chunks) == 1:
-        weaknesses = await _cluster_chunk(
-            prompt_template=prompt_template,
-            blocks=chunks[0],
+    if len(tag_summaries) > LARGE_INPUT_TAG_THRESHOLD:
+        print("Cluster: build units")
+        units = build_cluster_units(attributions=attributions, eval_records=eval_records)
+        print("Cluster: precluster")
+        candidates = propose_candidate_clusters(units)
+        print("Cluster: refine candidates")
+        refine_progress = _build_progress_bar(total=len(candidates), initial=0, desc="Cluster refine", unit="cluster")
+        try:
+            refined_clusters = await refine_candidate_clusters(
+                candidates,
+                provider=provider,
+                model=model,
+                provider_client=provider_client,
+                progress=refine_progress,
+            )
+        finally:
+            refine_progress.close()
+        print("Cluster: merge candidates")
+        weaknesses = await merge_refined_clusters(
+            refined_clusters,
             provider=provider,
             model=model,
             provider_client=provider_client,
+            progress_factory=_build_progress_bar,
         )
     else:
-        chunked_weaknesses = []
-        for chunk_blocks in chunks:
-            chunked_weaknesses.append(
-                await _cluster_chunk(
-                    prompt_template=prompt_template,
-                    blocks=chunk_blocks,
-                    provider=provider,
-                    model=model,
-                    provider_client=provider_client,
-                )
-            )
-        weaknesses = await _merge_chunked_weaknesses(
-            chunked_weaknesses=chunked_weaknesses,
+        prompt_template = load_prompt("cluster.txt")
+        blocks = _render_tag_summary_blocks(tag_summaries)
+        chunks = _chunk_blocks_by_char_budget(
             prompt_template=prompt_template,
-            provider=provider,
-            model=model,
-            provider_client=provider_client,
+            blocks=blocks,
+            budget_chars=CLUSTER_PROMPT_MAX_CHARS,
         )
+        if not chunks:
+            weaknesses = []
+        elif len(chunks) == 1:
+            weaknesses = await _cluster_chunk(
+                prompt_template=prompt_template,
+                blocks=chunks[0],
+                provider=provider,
+                model=model,
+                provider_client=provider_client,
+            )
+        else:
+            chunked_weaknesses = []
+            for chunk_blocks in chunks:
+                chunked_weaknesses.append(
+                    await _cluster_chunk(
+                        prompt_template=prompt_template,
+                        blocks=chunk_blocks,
+                        provider=provider,
+                        model=model,
+                        provider_client=provider_client,
+                    )
+                )
+            weaknesses = await _merge_chunked_weaknesses(
+                chunked_weaknesses=chunked_weaknesses,
+                prompt_template=prompt_template,
+                provider=provider,
+                model=model,
+                provider_client=provider_client,
+            )
+    if not attributions and not tag_summaries:
+        weaknesses: list[Weakness] = []
 
     weaknesses = _renumber_weaknesses(weaknesses)
     _expect_array_payload_with_min_items(

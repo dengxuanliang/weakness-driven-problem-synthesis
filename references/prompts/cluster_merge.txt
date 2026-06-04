@@ -1,0 +1,22 @@
+You are deciding whether two refined weakness clusters should be merged into one reusable weakness.
+
+Return JSON only as an object with:
+- `should_merge`
+- `merged_weakness`
+
+If `should_merge` is true, `merged_weakness` must be an object with:
+- `id`
+- `name`
+- `description`
+- `covered_tags`
+- `dominant_language`
+- `dominant_category`
+
+If `should_merge` is false, set `merged_weakness` to null.
+
+Rules:
+- Merge only when both clusters reflect the same underlying weakness.
+- Do not merge clusters that only share topic, domain, or test outcome.
+- Language or scenario differences alone should not block a true merge.
+- Be conservative: when uncertain, do not merge.
+- If merging, keep `covered_tags` limited to tags that truly belong to the shared weakness.
