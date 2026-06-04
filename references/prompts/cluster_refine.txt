@@ -1,0 +1,19 @@
+You are reviewing one candidate weakness cluster built from failure tags and representative evidence.
+
+Return JSON only as an array of objects with:
+- `id`
+- `name`
+- `description`
+- `covered_tags`
+- `dominant_language`
+- `dominant_category`
+
+Rules:
+- Review only the provided candidate cluster; do not invent outside evidence.
+- If the candidate cluster is coherent, return exactly one weakness.
+- If it is clearly mixed, split it into a small number of cleaner weaknesses.
+- Prefer conservative splitting over incorrect merging.
+- Group by shared underlying weakness, not surface topic or wording.
+- `covered_tags` must be chosen only from the provided candidate tags.
+- `name` must describe the reusable weakness, not just restate one tag.
+- `description` should explain the shared capability gap in 1-2 sentences.
