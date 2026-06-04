@@ -1,7 +1,7 @@
 import pytest
 
 from weakness_driven_problem_synthesis.cluster_merge import merge_refined_clusters
-from weakness_driven_problem_synthesis.cluster_precluster import build_cluster_units, propose_candidate_clusters
+from weakness_driven_problem_synthesis.cluster_precluster import _build_tag_stats, _tag_similarity_components, build_cluster_units, propose_candidate_clusters
 from weakness_driven_problem_synthesis.cluster_refine import refine_candidate_clusters
 from weakness_driven_problem_synthesis.cluster_types import CandidateCluster, ClusterUnit, RefinedCluster
 from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord
@@ -167,6 +167,190 @@ def test_propose_candidate_clusters_groups_related_tags():
     candidate_tags = sorted(sorted(candidate.member_tags) for candidate in candidates)
     assert ["greedy:wrong-local-choice"] in candidate_tags
     assert sorted(["recursion:base-case-missing", "recursion:termination-condition-missing"]) in candidate_tags
+
+
+def test_propose_candidate_clusters_links_cross_prefix_tags_with_shared_root_cause():
+    units = [
+        ClusterUnit(
+            question_id=1,
+            error_tags=["recursion:state-leak"],
+            root_cause="shared mutable state leaks across recursive frames",
+            ability_dimensions=["reasoning", "state_management"],
+            language="python",
+            category="algorithms",
+            one_line_content="recursive search with shared path state",
+        ),
+        ClusterUnit(
+            question_id=2,
+            error_tags=["backtracking:shared-mutable-state"],
+            root_cause="shared mutable state leaks across search branches",
+            ability_dimensions=["reasoning", "state_management"],
+            language="python",
+            category="algorithms",
+            one_line_content="backtracking search with shared path state",
+        ),
+        ClusterUnit(
+            question_id=3,
+            error_tags=["greedy:wrong-local-choice"],
+            root_cause="uses greedy shortcut",
+            ability_dimensions=["optimization"],
+            language="python",
+            category="algorithms",
+            one_line_content="interval schedule",
+        ),
+    ]
+
+    candidates = propose_candidate_clusters(units)
+
+    candidate_tags = sorted(sorted(candidate.member_tags) for candidate in candidates)
+    assert sorted(["backtracking:shared-mutable-state", "recursion:state-leak"]) in candidate_tags
+
+
+def test_propose_candidate_clusters_keeps_same_prefix_tags_separate_when_root_cause_differs():
+    units = [
+        ClusterUnit(
+            question_id=1,
+            error_tags=["dp:transition-missing"],
+            root_cause="omits recurrence transition case",
+            ability_dimensions=["reasoning"],
+            language="python",
+            category="algorithms",
+            one_line_content="dynamic programming over prefixes",
+        ),
+        ClusterUnit(
+            question_id=2,
+            error_tags=["dp:memory-overflow"],
+            root_cause="allocates quadratic table without compression",
+            ability_dimensions=["complexity"],
+            language="python",
+            category="algorithms",
+            one_line_content="memory-heavy dynamic programming table",
+        ),
+    ]
+
+    candidates = propose_candidate_clusters(units)
+
+    candidate_tags = sorted(sorted(candidate.member_tags) for candidate in candidates)
+    assert ["dp:memory-overflow"] in candidate_tags
+    assert ["dp:transition-missing"] in candidate_tags
+
+
+def test_propose_candidate_clusters_does_not_treat_generic_ability_overlap_as_same_prefix_exemption():
+    units = [
+        ClusterUnit(
+            question_id=1,
+            error_tags=["dp:transition-missing"],
+            root_cause="omits recurrence transition case",
+            ability_dimensions=["reasoning"],
+            language="python",
+            category="algorithms",
+            one_line_content="dynamic programming over prefixes",
+        ),
+        ClusterUnit(
+            question_id=2,
+            error_tags=["dp:memory-overflow"],
+            root_cause="allocates quadratic table without compression",
+            ability_dimensions=["reasoning"],
+            language="python",
+            category="algorithms",
+            one_line_content="memory-heavy dynamic programming table",
+        ),
+    ]
+
+    candidates = propose_candidate_clusters(units)
+
+    candidate_tags = sorted(sorted(candidate.member_tags) for candidate in candidates)
+    assert ["dp:memory-overflow"] in candidate_tags
+    assert ["dp:transition-missing"] in candidate_tags
+
+
+def test_propose_candidate_clusters_does_not_bridge_cross_prefix_tags_with_only_topic_similarity():
+    units = [
+        ClusterUnit(
+            question_id=1,
+            error_tags=["graph:state-update-order"],
+            root_cause="updates distance state in the wrong relaxation order",
+            ability_dimensions=["reasoning", "graph_search"],
+            language="python",
+            category="algorithms",
+            one_line_content="grid shortest path graph traversal",
+        ),
+        ClusterUnit(
+            question_id=2,
+            error_tags=["dfs:premature-termination"],
+            root_cause="returns early before exploring all reachable branches",
+            ability_dimensions=["reasoning", "graph_search"],
+            language="python",
+            category="algorithms",
+            one_line_content="grid shortest path graph traversal",
+        ),
+    ]
+
+    candidates = propose_candidate_clusters(units)
+
+    candidate_tags = sorted(sorted(candidate.member_tags) for candidate in candidates)
+    assert ["dfs:premature-termination"] in candidate_tags
+    assert ["graph:state-update-order"] in candidate_tags
+
+
+def test_tag_similarity_components_expose_bridge_and_penalty_flags():
+    bridge_units = [
+        ClusterUnit(
+            question_id=1,
+            error_tags=["recursion:state-leak"],
+            root_cause="shared mutable state leaks across recursive frames",
+            ability_dimensions=["reasoning", "state_management"],
+            language="python",
+            category="algorithms",
+            one_line_content="recursive search with shared path state",
+        ),
+        ClusterUnit(
+            question_id=2,
+            error_tags=["backtracking:shared-mutable-state"],
+            root_cause="shared mutable state leaks across search branches",
+            ability_dimensions=["reasoning", "state_management"],
+            language="python",
+            category="algorithms",
+            one_line_content="backtracking search with shared path state",
+        ),
+    ]
+    bridge_stats = _build_tag_stats(bridge_units)
+    bridge_components = _tag_similarity_components(
+        "recursion:state-leak",
+        "backtracking:shared-mutable-state",
+        bridge_stats,
+    )
+    assert bridge_components["bridge_applied"] is True
+    assert bridge_components["same_prefix_penalty_applied"] is False
+
+    penalty_units = [
+        ClusterUnit(
+            question_id=1,
+            error_tags=["dp:transition-missing"],
+            root_cause="omits recurrence transition case",
+            ability_dimensions=["reasoning"],
+            language="python",
+            category="algorithms",
+            one_line_content="dynamic programming over prefixes",
+        ),
+        ClusterUnit(
+            question_id=2,
+            error_tags=["dp:memory-overflow"],
+            root_cause="allocates quadratic table without compression",
+            ability_dimensions=["reasoning"],
+            language="python",
+            category="algorithms",
+            one_line_content="memory-heavy dynamic programming table",
+        ),
+    ]
+    penalty_stats = _build_tag_stats(penalty_units)
+    penalty_components = _tag_similarity_components(
+        "dp:transition-missing",
+        "dp:memory-overflow",
+        penalty_stats,
+    )
+    assert penalty_components["bridge_applied"] is False
+    assert penalty_components["same_prefix_penalty_applied"] is True
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,22 @@ from weakness_driven_problem_synthesis.schemas import Attribution, EvalRecord
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 REPRESENTATIVE_UNIT_LIMIT = 3
-TAG_SIMILARITY_THRESHOLD = 0.55
+TAG_SIMILARITY_THRESHOLD = 0.52
+PREFIX_WEIGHT = 0.40
+ABILITY_WEIGHT = 0.20
+GENERIC_ABILITY_WEIGHT = 0.05
+ROOT_OVERLAP_CAP = 0.25
+TAG_OVERLAP_CAP = 0.12
+CONTENT_OVERLAP_CAP = 0.10
+LANGUAGE_WEIGHT = 0.03
+CATEGORY_WEIGHT = 0.02
+CROSS_PREFIX_BRIDGE_BONUS = 0.10
+CROSS_PREFIX_ROOT_OVERLAP_MIN = 0.35
+CROSS_PREFIX_CONTENT_OVERLAP_MIN = 0.10
+SAME_PREFIX_WEAK_SEMANTIC_PENALTY = 0.12
+SAME_PREFIX_ROOT_OVERLAP_MIN = 0.05
+SAME_PREFIX_TAG_OVERLAP_RESCUE_MIN = 0.30
+GENERIC_ABILITY_DIMENSIONS = {"reasoning", "generalization"}
 
 
 def _tokenize(text: str) -> set[str]:
@@ -92,20 +107,75 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / len(union)
 
 
-def _tag_similarity(left_tag: str, right_tag: str, stats: dict[str, dict[str, object]]) -> float:
+def _has_specific_ability_overlap(left: set[str], right: set[str]) -> bool:
+    overlap = left & right
+    return bool(overlap - GENERIC_ABILITY_DIMENSIONS)
+
+
+def _tag_similarity_components(left_tag: str, right_tag: str, stats: dict[str, dict[str, object]]) -> dict[str, object]:
     left = stats[left_tag]
     right = stats[right_tag]
+    same_prefix = _tag_prefix(left_tag) == _tag_prefix(right_tag)
+    ability_overlap = bool(left["ability_dimensions"] & right["ability_dimensions"])
+    specific_ability_overlap = _has_specific_ability_overlap(left["ability_dimensions"], right["ability_dimensions"])
+    root_overlap = _jaccard(left["root_tokens"], right["root_tokens"])
+    left_tag_tokens = _tokenize(left_tag.replace(":", " ").replace("-", " "))
+    right_tag_tokens = _tokenize(right_tag.replace(":", " ").replace("-", " "))
+    tag_overlap = _jaccard(left_tag_tokens, right_tag_tokens)
+    content_overlap = _jaccard(left["content_tokens"], right["content_tokens"])
+    same_language = bool(
+        _dominant_value(left["languages"]) and _dominant_value(left["languages"]) == _dominant_value(right["languages"])
+    )
+    same_category = bool(
+        _dominant_value(left["categories"]) and _dominant_value(left["categories"]) == _dominant_value(right["categories"])
+    )
+    bridge_applied = bool(
+        (not same_prefix)
+        and ability_overlap
+        and root_overlap >= CROSS_PREFIX_ROOT_OVERLAP_MIN
+        and content_overlap >= CROSS_PREFIX_CONTENT_OVERLAP_MIN
+    )
+    same_prefix_penalty_applied = bool(
+        same_prefix
+        and (not specific_ability_overlap)
+        and root_overlap < SAME_PREFIX_ROOT_OVERLAP_MIN
+        and tag_overlap < SAME_PREFIX_TAG_OVERLAP_RESCUE_MIN
+    )
+    return {
+        "same_prefix": same_prefix,
+        "ability_overlap": ability_overlap,
+        "specific_ability_overlap": specific_ability_overlap,
+        "root_overlap": root_overlap,
+        "tag_overlap": tag_overlap,
+        "content_overlap": content_overlap,
+        "same_language": same_language,
+        "same_category": same_category,
+        "bridge_applied": bridge_applied,
+        "same_prefix_penalty_applied": same_prefix_penalty_applied,
+    }
+
+
+def _tag_similarity(left_tag: str, right_tag: str, stats: dict[str, dict[str, object]]) -> float:
+    components = _tag_similarity_components(left_tag, right_tag, stats)
     score = 0.0
-    if _tag_prefix(left_tag) == _tag_prefix(right_tag):
-        score += 0.55
-    if left["ability_dimensions"] & right["ability_dimensions"]:
-        score += 0.15
-    score += min(_jaccard(left["root_tokens"], right["root_tokens"]), 0.2)
-    score += min(_jaccard(left["content_tokens"], right["content_tokens"]), 0.1)
-    if _dominant_value(left["languages"]) and _dominant_value(left["languages"]) == _dominant_value(right["languages"]):
-        score += 0.05
-    if _dominant_value(left["categories"]) and _dominant_value(left["categories"]) == _dominant_value(right["categories"]):
-        score += 0.05
+    if components["same_prefix"]:
+        score += PREFIX_WEIGHT
+    if components["specific_ability_overlap"]:
+        score += ABILITY_WEIGHT
+    elif components["ability_overlap"]:
+        score += GENERIC_ABILITY_WEIGHT
+    score += min(components["root_overlap"], ROOT_OVERLAP_CAP)
+    score += min(components["tag_overlap"], TAG_OVERLAP_CAP)
+    if not components["same_prefix_penalty_applied"]:
+        score += min(components["content_overlap"], CONTENT_OVERLAP_CAP)
+    if components["same_language"]:
+        score += LANGUAGE_WEIGHT
+    if components["same_category"]:
+        score += CATEGORY_WEIGHT
+    if components["bridge_applied"]:
+        score += CROSS_PREFIX_BRIDGE_BONUS
+    if components["same_prefix_penalty_applied"]:
+        score -= SAME_PREFIX_WEAK_SEMANTIC_PENALTY
     return score
 
 
