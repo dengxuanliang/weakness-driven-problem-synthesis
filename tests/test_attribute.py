@@ -466,9 +466,8 @@ def test_explicit_model_overrides_project_dotenv_model(monkeypatch, tmp_path):
     calls = {}
 
     class FakeAsyncOpenAI:
-        def __init__(self, *, api_key, base_url):
-            calls["api_key"] = api_key
-            calls["base_url"] = base_url
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
 
     monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
 
@@ -476,6 +475,11 @@ def test_explicit_model_overrides_project_dotenv_model(monkeypatch, tmp_path):
     assert client.model == "cli-model"
     assert calls["api_key"] == "dotenv-key"
     assert calls["base_url"] == "https://dotenv.example"
+    assert isinstance(calls["timeout"], httpx.Timeout)
+    assert calls["timeout"].connect == 30
+    assert calls["timeout"].read == 300
+    assert calls["timeout"].write == 300
+    assert calls["timeout"].pool == 300
 
 
 def test_model_name_uses_project_dotenv_when_cli_model_missing(monkeypatch, tmp_path):
@@ -485,7 +489,7 @@ def test_model_name_uses_project_dotenv_when_cli_model_missing(monkeypatch, tmp_
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
     class FakeAsyncOpenAI:
-        def __init__(self, *, api_key, base_url):
+        def __init__(self, **kwargs):
             pass
 
     monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
@@ -500,7 +504,7 @@ def test_model_name_uses_project_cwd_dotenv(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
     class FakeAsyncOpenAI:
-        def __init__(self, *, api_key, base_url):
+        def __init__(self, **kwargs):
             pass
 
     monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
@@ -520,9 +524,8 @@ def test_environment_overrides_project_dotenv(monkeypatch, tmp_path):
     calls = {}
 
     class FakeAsyncOpenAI:
-        def __init__(self, *, api_key, base_url):
-            calls["api_key"] = api_key
-            calls["base_url"] = base_url
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
 
     monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI))
 
@@ -577,6 +580,10 @@ def test_openai_client_injects_http_client_from_environment_proxy(monkeypatch, t
 
     build_provider_client(provider="openai", model=None)
     assert isinstance(calls["http_client"], httpx.AsyncClient)
+    assert calls["http_client"].timeout.connect == 30
+    assert calls["http_client"].timeout.read == 300
+    assert calls["http_client"].timeout.write == 300
+    assert calls["http_client"].timeout.pool == 300
 
 
 def test_openai_client_injects_http_client_from_project_dotenv_proxy(monkeypatch, tmp_path):
