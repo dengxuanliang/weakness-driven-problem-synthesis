@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 
 SUPPORTED_PROVIDERS = {"anthropic", "openai"}
 
@@ -273,11 +274,9 @@ def _build_optional_httpx_client(config: dict[str, str]) -> Any | None:
     if not proxy_url:
         return None
 
-    import httpx
-
     return httpx.AsyncClient(
         proxy=proxy_url,
-        timeout=httpx.Timeout(120.0),
+        timeout=httpx.Timeout(300.0, connect=30.0),
         trust_env=False,
     )
 
@@ -331,6 +330,7 @@ def build_provider_client(provider: str, model: str | None) -> ProviderClient:
         openai_kwargs: dict[str, Any] = {
             "api_key": api_key,
             "base_url": _resolve_config_value(key="OPENAI_BASE_URL", config=config),
+            "timeout": httpx.Timeout(300.0, connect=30.0),
         }
         if http_client is not None:
             openai_kwargs["http_client"] = http_client
