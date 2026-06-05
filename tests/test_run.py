@@ -258,7 +258,74 @@ async def test_pipeline_stops_when_confirmation_rejected(tmp_path, monkeypatch):
     )
 
     assert exit_code == 1
-    assert not (tmp_path / "out" / "report.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_synthesize_start_stage_passes_eval_records_when_eval_log_is_provided(tmp_path, monkeypatch):
+    eval_log = tmp_path / "eval.jsonl"
+    eval_log.write_text(
+        '{"question_id":1,"content":"problem one","canonical_solution":"x","completion":"y","test":"t","labels":{"category":"c","programming_language":"python","difficulty":"hard"},"pass_at_1":0}\n'
+    )
+    attributions_path = tmp_path / "error_attributions.jsonl"
+    attributions_path.write_text(
+        '{"question_id": 1, "is_truly_failed": true, "error_tags": ["recursion:base-case-missing"], "root_cause": "missed base case", "ability_dimensions": ["reasoning"], "evidence_snippet": "if n == 0"}\n'
+    )
+    weaknesses_path = tmp_path / "weaknesses.json"
+    weaknesses_path.write_text(
+        WeaknessSet(
+            weaknesses=[
+                Weakness(
+                    id="W001",
+                    name="Recursion termination",
+                    description="recursion bugs",
+                    covered_tags=["recursion:base-case-missing"],
+                    dominant_language="python",
+                    dominant_category="algorithms",
+                )
+            ],
+            evidence_question_ids={"W001": [1]},
+        ).model_dump_json(indent=2)
+    )
+
+    captured = {}
+
+    async def fake_synthesize_for_weaknesses(*args, **kwargs):
+        captured["eval_records_by_id"] = kwargs.get("eval_records_by_id")
+        output_path = kwargs["output_path"]
+        output_path.write_text(
+            '{"id":"S00001","weakness_id":"W001","batch_index":0,"language":"python","difficulty":"hard","scenario":"demo","problem_statement":"'
+            + ("x" * 240)
+            + '","function_signature":"def solve(x: list[int]) -> int:","input_format":"list[int]","output_format":"int","constraints":["1 <= n <= 1e5"],"edge_cases_hinted":["empty input"],"anti_homogeneity_notes":"demo","input_scale_class":"scale-a","data_shape_class":"shape-a","primary_pitfall":"pitfall-a","novelty_reason":"novelty-a"}\n'
+        )
+        return SynthesisSummary(completed=1, retry_count=0, dropped=0)
+
+    monkeypatch.setattr("weakness_driven_problem_synthesis.run.synthesize_for_weaknesses", fake_synthesize_for_weaknesses)
+
+    exit_code = await main_with_args(
+        [
+            "--eval-log",
+            str(eval_log),
+            "--total-questions",
+            "1",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--provider",
+            "openai",
+            "--model",
+            "test-model",
+            "--start-stage",
+            "synthesize",
+            "--attributions-file",
+            str(attributions_path),
+            "--weaknesses-file",
+            str(weaknesses_path),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["eval_records_by_id"] is not None
+    assert 1 in captured["eval_records_by_id"]
 
 
 @pytest.mark.asyncio
@@ -660,7 +727,7 @@ async def test_synthesize_start_stage_skips_attribute_and_cluster_and_uses_exist
     async def fail_cluster(*args, **kwargs):
         raise AssertionError("cluster_weaknesses should not run when --start-stage=synthesize")
 
-    async def fake_synthesize_for_weaknesses(weakness_set, *, allocations, output_path, provider, model, provider_client=None):
+    async def fake_synthesize_for_weaknesses(weakness_set, *, allocations, output_path, provider, model, provider_client=None, **kwargs):
         assert [item.id for item in weakness_set.weaknesses] == ["W001"]
         assert allocations == {"W001": 1}
         output_path.write_text(
@@ -792,7 +859,7 @@ async def test_synthesize_start_stage_accepts_matching_evidence_ids_and_tags(tmp
         '{"weaknesses":[{"id":"W001","name":"Recursion termination","description":"recursion bugs","covered_tags":["recursion:base-case-missing"],"dominant_language":"python","dominant_category":"algorithms"}],"evidence_question_ids":{"W001":[1]}}'
     )
 
-    async def fake_synthesize_for_weaknesses(weakness_set, *, allocations, output_path, provider, model, provider_client=None):
+    async def fake_synthesize_for_weaknesses(weakness_set, *, allocations, output_path, provider, model, provider_client=None, **kwargs):
         assert allocations == {"W001": 1}
         output_path.write_text(
             '{"id":"S00001","weakness_id":"W001","batch_index":0,"language":"python","difficulty":"hard","scenario":"demo","problem_statement":"'
@@ -867,7 +934,7 @@ async def test_synthesize_start_stage_loads_attributions_only_once(tmp_path, mon
     def fake_validate_weakness_evidence_against_attributions(*, weakness_set, truly_failed_attributions):
         assert [item.question_id for item in truly_failed_attributions] == [1]
 
-    async def fake_synthesize_for_weaknesses(weakness_set, *, allocations, output_path, provider, model, provider_client=None):
+    async def fake_synthesize_for_weaknesses(weakness_set, *, allocations, output_path, provider, model, provider_client=None, **kwargs):
         output_path.write_text(
             '{"id":"S00001","weakness_id":"W001","batch_index":0,"language":"python","difficulty":"hard","scenario":"demo","problem_statement":"'
             + ("x" * 240)

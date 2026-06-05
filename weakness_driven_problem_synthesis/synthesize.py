@@ -10,7 +10,7 @@ from typing import Any
 from weakness_driven_problem_synthesis.dedup import duplicate_key, ngram_jaccard
 from weakness_driven_problem_synthesis.llm_client import complete_json
 from weakness_driven_problem_synthesis.prompts import load_prompt
-from weakness_driven_problem_synthesis.schemas import SynthesisSummary, SynthProblem, Weakness, WeaknessSet
+from weakness_driven_problem_synthesis.schemas import EvalRecord, SynthesisSummary, SynthProblem, Weakness, WeaknessSet
 
 BASE_BATCH_SIZE = 10
 MIN_STATEMENT_CHARS = 200
@@ -22,6 +22,11 @@ MAX_EXTRA_BATCHES = 2
 RECENT_SUMMARY_LIMIT = 20
 MAX_COVERAGE_BUCKETS = 12
 SYNTHESIS_MAX_TOKENS = 12_000
+MAX_REPRESENTATIVE_TAGS = 3
+MAX_REPRESENTATIVE_TAG_CHARS = 200
+MAX_REPRESENTATIVE_SKETCHES = 2
+MAX_REPRESENTATIVE_SKETCH_CHARS = 300
+MAX_SINGLE_SKETCH_CHARS = 120
 
 
 def _build_progress_bar(*, total: int, initial: int, desc: str, unit: str) -> Any:
@@ -89,6 +94,71 @@ def _coverage_summary(problems: list[dict], *, max_buckets: int = MAX_COVERAGE_B
     return "\n".join(lines)
 
 
+def _truncate_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit]
+
+
+def _render_representative_tags(weakness: Weakness) -> str:
+    if not weakness.covered_tags:
+        return "Representative tags: none"
+
+    selected: list[str] = []
+    total_chars = 0
+    for raw_tag in weakness.covered_tags:
+        tag = raw_tag
+        remaining = MAX_REPRESENTATIVE_TAG_CHARS - total_chars
+        if remaining <= 0 or len(selected) >= MAX_REPRESENTATIVE_TAGS:
+            break
+        line_overhead = 2 if selected else 0
+        allowed = max(remaining - line_overhead, 0)
+        if allowed <= 0:
+            break
+        if len(tag) > allowed:
+            tag = _truncate_text(tag, allowed)
+        candidate_chars = total_chars + line_overhead + len(tag)
+        if candidate_chars > MAX_REPRESENTATIVE_TAG_CHARS:
+            break
+        selected.append(tag)
+        total_chars = candidate_chars
+
+    if not selected:
+        return "Representative tags: none"
+    return "Representative tags:\n" + "\n".join(f"- {tag}" for tag in selected)
+
+
+def _render_failure_sketches(
+    *,
+    evidence_question_ids: list[int],
+    eval_records_by_id: dict[int, EvalRecord] | None,
+) -> str:
+    if not evidence_question_ids or not eval_records_by_id:
+        return "Representative failure sketches: none"
+
+    selected: list[str] = []
+    total_chars = 0
+    for question_id in evidence_question_ids:
+        record = eval_records_by_id.get(question_id)
+        if record is None:
+            continue
+        sketch = _truncate_text(record.content.strip().splitlines()[0], MAX_SINGLE_SKETCH_CHARS)
+        if not sketch:
+            continue
+        line_overhead = 2 if selected else 0
+        candidate_chars = total_chars + line_overhead + len(sketch)
+        if candidate_chars > MAX_REPRESENTATIVE_SKETCH_CHARS:
+            break
+        selected.append(sketch)
+        total_chars = candidate_chars
+        if len(selected) >= MAX_REPRESENTATIVE_SKETCHES:
+            break
+
+    if not selected:
+        return "Representative failure sketches: none"
+    return "Representative failure sketches:\n" + "\n".join(f"- {sketch}" for sketch in selected)
+
+
 def _expect_array_payload(payload: Any, *, stage: str) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return payload
@@ -111,9 +181,16 @@ def _build_synthesis_prompt(
     weakness: Weakness,
     batch_size: int,
     weakness_history: list[dict],
+    evidence_question_ids: list[int],
+    eval_records_by_id: dict[int, EvalRecord] | None,
 ) -> str:
     prior_summary = _prior_summary(weakness_history)
     coverage_summary = _coverage_summary(weakness_history)
+    representative_tags = _render_representative_tags(weakness)
+    representative_sketches = _render_failure_sketches(
+        evidence_question_ids=evidence_question_ids,
+        eval_records_by_id=eval_records_by_id,
+    )
     return (
         f"{prompt_template}\n\n"
         f"Weakness ID: {weakness.id}\n"
@@ -121,6 +198,8 @@ def _build_synthesis_prompt(
         f"Description: {weakness.description}\n"
         f"Language: {weakness.dominant_language}\n"
         f"Batch size: {batch_size}\n"
+        f"{representative_tags}\n"
+        f"{representative_sketches}\n"
         f"{prior_summary}\n"
         f"{coverage_summary}\n"
     )
@@ -152,6 +231,7 @@ async def synthesize_for_weaknesses(
     provider: str,
     model: str | None,
     provider_client: Any | None = None,
+    eval_records_by_id: dict[int, EvalRecord] | None = None,
 ) -> SynthesisSummary:
     existing = _load_existing_problems(output_path)
     completed = len(existing)
@@ -188,12 +268,15 @@ async def synthesize_for_weaknesses(
                 batch_size = min(BASE_BATCH_SIZE, target - current)
                 prompt_template = load_prompt("synthesize.txt")
                 weakness_history = existing_by_weakness.get(weakness.id, [])
+                evidence_question_ids = weakness_set.evidence_question_ids.get(weakness.id, [])
                 payload = await complete_json(
                     _build_synthesis_prompt(
                         prompt_template=prompt_template,
                         weakness=weakness,
                         batch_size=batch_size,
                         weakness_history=weakness_history,
+                        evidence_question_ids=evidence_question_ids,
+                        eval_records_by_id=eval_records_by_id,
                     ),
                     {"type": "array"},
                     provider=provider,
@@ -255,6 +338,8 @@ async def synthesize_for_weaknesses(
                                 weakness=weakness,
                                 batch_size=1,
                                 weakness_history=weakness_history,
+                                evidence_question_ids=evidence_question_ids,
+                                eval_records_by_id=eval_records_by_id,
                             ),
                             {"type": "array"},
                             provider=provider,

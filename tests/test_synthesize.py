@@ -2,9 +2,10 @@ import json
 
 import pytest
 
-from weakness_driven_problem_synthesis.schemas import SynthesisSummary, Weakness, WeaknessSet
+from weakness_driven_problem_synthesis.schemas import EvalRecord, SynthesisSummary, Weakness, WeaknessSet
 from weakness_driven_problem_synthesis.synthesize import (
     RECENT_SUMMARY_LIMIT,
+    _build_synthesis_prompt,
     has_high_similarity,
     synthesize_for_weaknesses,
 )
@@ -71,6 +72,24 @@ def make_weakness_set() -> WeaknessSet:
     )
 
 
+def make_eval_record(question_id: int, content: str) -> EvalRecord:
+    return EvalRecord.model_validate(
+        {
+            "question_id": question_id,
+            "content": content,
+            "canonical_solution": "def solve(): pass",
+            "completion": "def solve(): return None",
+            "test": "assert True",
+            "labels": {
+                "category": "algorithms",
+                "programming_language": "python",
+                "difficulty": "hard",
+            },
+            "pass_at_1": 0,
+        }
+    )
+
+
 def make_problem(
     *,
     id: str,
@@ -107,6 +126,72 @@ def make_problem(
         "primary_pitfall": primary_pitfall,
         "novelty_reason": novelty_reason,
     }
+
+
+def test_build_synthesis_prompt_includes_compact_representative_tags_and_failure_sketches():
+    weakness = Weakness(
+        id="W001",
+        name="Framework logging misuse",
+        description="logging integration bugs",
+        covered_tags=[
+            "framework:logger-api-misuse",
+            "flask:context-agnostic-logging",
+            "integration:missing-framework-logger",
+            "very-long-extra-tag-that-should-be-dropped-because-it-exceeds-the-budget",
+        ],
+        dominant_language="python",
+        dominant_category="algorithms",
+    )
+    eval_records_by_id = {
+        1: make_eval_record(1, "Flask request logging loses request scoped metadata when using the wrong logger."),
+        2: make_eval_record(2, "Audit pipeline bypasses framework managed handlers and drops lifecycle integration."),
+        3: make_eval_record(3, "Unused third evidence that should not appear."),
+    }
+
+    prompt = _build_synthesis_prompt(
+        prompt_template="synthesize prompt",
+        weakness=weakness,
+        batch_size=2,
+        weakness_history=[],
+        evidence_question_ids=[1, 2, 3],
+        eval_records_by_id=eval_records_by_id,
+    )
+
+    assert "Representative tags:" in prompt
+    tags_section = prompt.split("Representative tags:\n", 1)[1].split("\nRepresentative failure sketches:", 1)[0]
+    tag_lines = [line for line in tags_section.splitlines() if line.startswith("- ")]
+    assert len(tag_lines) <= 3
+    assert len(tags_section) <= 200
+    assert "framework:logger-api-misuse" in tags_section
+
+    assert "Representative failure sketches:" in prompt
+    sketches_section = prompt.split("Representative failure sketches:\n", 1)[1].split("\nRecent generated problems:", 1)[0]
+    sketch_lines = [line for line in sketches_section.splitlines() if line.startswith("- ")]
+    assert len(sketch_lines) <= 2
+    assert len(sketches_section) <= 300
+    assert "Unused third evidence" not in sketches_section
+
+
+def test_build_synthesis_prompt_gracefully_omits_failure_sketches_without_evidence_records():
+    weakness = Weakness(
+        id="W001",
+        name="Framework logging misuse",
+        description="logging integration bugs",
+        covered_tags=["framework:logger-api-misuse"],
+        dominant_language="python",
+        dominant_category="algorithms",
+    )
+
+    prompt = _build_synthesis_prompt(
+        prompt_template="synthesize prompt",
+        weakness=weakness,
+        batch_size=1,
+        weakness_history=[],
+        evidence_question_ids=[1, 2],
+        eval_records_by_id=None,
+    )
+
+    assert "Representative failure sketches: none" in prompt
 
 
 @pytest.mark.asyncio
