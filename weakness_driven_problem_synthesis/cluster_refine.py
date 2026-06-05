@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from weakness_driven_problem_synthesis.cluster_types import CandidateCluster, ClusterUnit, RefinedCluster
@@ -15,6 +17,22 @@ REFINE_PROMPT_MAX_CHARS = 20_000
 REFINE_TAG_LIMIT_STEPS = (16, 12, 8, 6, 4, 2, 1)
 REFINE_REPRESENTATIVE_LIMIT_STEPS = (3, 2, 1)
 REFINE_TEXT_LIMIT_STEPS = (2000, 1200, 800, 400, 200, 120, 80)
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    temp_path.replace(path)
+
+
+def _serialize_refined_checkpoint(refined_by_candidate_id: dict[str, list[RefinedCluster]]) -> list[dict[str, object]]:
+    return [
+        {
+            "candidate_id": candidate_id,
+            "refined_clusters": [asdict(cluster) for cluster in clusters],
+        }
+        for candidate_id, clusters in refined_by_candidate_id.items()
+    ]
 
 
 def _expect_array_payload_with_min_items(payload: Any, *, stage: str, min_items: int) -> list[dict[str, Any]]:
@@ -136,13 +154,24 @@ async def refine_candidate_clusters(
     model: str | None,
     provider_client: Any | None = None,
     progress: Any | None = None,
+    resume_refined_by_candidate_id: dict[str, list[RefinedCluster]] | None = None,
+    checkpoint_path: Path | None = None,
 ) -> list[RefinedCluster]:
     if not candidates:
         return []
 
     prompt_template = load_prompt("cluster_refine.txt")
+    refined_by_candidate_id = {
+        candidate_id: list(clusters)
+        for candidate_id, clusters in (resume_refined_by_candidate_id or {}).items()
+    }
     refined: list[RefinedCluster] = []
     for candidate in candidates:
+        if candidate.candidate_id in refined_by_candidate_id:
+            refined.extend(refined_by_candidate_id[candidate.candidate_id])
+            continue
+
+        candidate_refined: list[RefinedCluster] = []
         payload = await complete_json(
             _build_refine_prompt(prompt_template=prompt_template, candidate=candidate),
             {"type": "array"},
@@ -158,7 +187,7 @@ async def refine_candidate_clusters(
         for index, item in enumerate(refined_payload, start=1):
             weakness = Weakness.model_validate(item)
             child_units = _select_child_units(candidate, covered_tags=list(weakness.covered_tags))
-            refined.append(
+            candidate_refined.append(
                 RefinedCluster(
                     refined_id=f"{candidate.candidate_id}-R{index:02d}",
                     name=weakness.name,
@@ -170,6 +199,10 @@ async def refine_candidate_clusters(
                     dominant_category=weakness.dominant_category,
                 )
             )
+        refined_by_candidate_id[candidate.candidate_id] = candidate_refined
+        refined.extend(candidate_refined)
+        if checkpoint_path is not None:
+            _write_json_atomic(checkpoint_path, _serialize_refined_checkpoint(refined_by_candidate_id))
         if progress is not None:
             progress.update(1)
     return refined
