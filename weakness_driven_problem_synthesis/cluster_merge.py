@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Callable
 
 from weakness_driven_problem_synthesis.cluster_types import ClusterUnit, RefinedCluster
@@ -19,6 +21,27 @@ MERGE_TAG_LIMIT_STEPS = (8, 6, 4, 2, 1)
 MERGE_REPRESENTATIVE_LIMIT_STEPS = (2, 1)
 MERGE_TEXT_LIMIT_STEPS = (1600, 1000, 600, 300, 160, 100, 80)
 TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    temp_path.replace(path)
+
+
+def _serialize_merge_state(
+    *,
+    current: list[RefinedCluster],
+    rejected_pairs: set[tuple[str, str]],
+    merge_index: int,
+    round_index: int,
+) -> dict[str, object]:
+    return {
+        "current": [asdict(cluster) for cluster in current],
+        "rejected_pairs": [list(pair) for pair in sorted(rejected_pairs)],
+        "merge_index": merge_index,
+        "round_index": round_index,
+    }
 
 
 def _tokenize(text: str) -> set[str]:
@@ -218,15 +241,23 @@ async def merge_refined_clusters(
     model: str | None,
     provider_client: Any | None = None,
     progress_factory: Callable[..., Any] | None = None,
+    resume_state: dict[str, Any] | None = None,
+    checkpoint_path: Path | None = None,
 ) -> list[Weakness]:
     if not refined_clusters:
         return []
 
     prompt_template = load_prompt("cluster_merge.txt")
-    current = list(refined_clusters)
-    rejected_pairs: set[tuple[str, str]] = set()
-    merge_index = 1
-    round_index = 1
+    if resume_state is not None:
+        current = list(refined_clusters)
+        rejected_pairs = {tuple(pair) for pair in resume_state.get("rejected_pairs", [])}
+        merge_index = int(resume_state.get("merge_index", 1))
+        round_index = int(resume_state.get("round_index", 1))
+    else:
+        current = list(refined_clusters)
+        rejected_pairs = set()
+        merge_index = 1
+        round_index = 1
     while True:
         merge_pairs = _build_merge_pairs(current, rejected_pairs=rejected_pairs)
         if not merge_pairs:
@@ -282,11 +313,31 @@ async def merge_refined_clusters(
             exhausted_pairs = len(rejected_pairs) > 0 and not _build_merge_pairs(current, rejected_pairs=rejected_pairs)
             if exhausted_pairs:
                 break
+            if checkpoint_path is not None:
+                _write_json_atomic(
+                    checkpoint_path,
+                    _serialize_merge_state(
+                        current=current,
+                        rejected_pairs=rejected_pairs,
+                        merge_index=merge_index,
+                        round_index=round_index + 1,
+                    ),
+                )
             round_index += 1
             continue
         if len(next_clusters) == len(current):
             break
         current = next_clusters
+        if checkpoint_path is not None:
+            _write_json_atomic(
+                checkpoint_path,
+                _serialize_merge_state(
+                    current=current,
+                    rejected_pairs=rejected_pairs,
+                    merge_index=merge_index,
+                    round_index=round_index + 1,
+                ),
+            )
         round_index += 1
 
     return [

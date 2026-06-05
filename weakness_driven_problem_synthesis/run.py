@@ -346,6 +346,7 @@ async def main_with_args(argv: list[str]) -> int:
         output_path=output_dir / "synthesized_problems.jsonl",
         provider=args.provider,
         model=args.model,
+        eval_records_by_id={record.question_id: record for record in failed_records if record.question_id is not None},
     )
     sampled = {}
     synth_path = output_dir / "synthesized_problems.jsonl"

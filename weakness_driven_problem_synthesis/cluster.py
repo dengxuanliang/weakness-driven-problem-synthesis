@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from weakness_driven_problem_synthesis.cluster_types import CandidateCluster, ClusterUnit, RefinedCluster
 from weakness_driven_problem_synthesis.cluster_merge import merge_refined_clusters
 from weakness_driven_problem_synthesis.cluster_precluster import build_cluster_units, propose_candidate_clusters
 from weakness_driven_problem_synthesis.cluster_refine import refine_candidate_clusters
@@ -17,6 +19,9 @@ CLUSTER_PROMPT_MAX_CHARS = 25_000
 MERGE_BLOCK_MAX_TAGS = 8
 MERGE_BLOCK_MAX_TAG_CHARS = 8_000
 LARGE_INPUT_TAG_THRESHOLD = 12
+CLUSTER_CANDIDATES_ARTIFACT = "cluster_candidates.json"
+CLUSTER_REFINED_ARTIFACT = "cluster_refined.json"
+CLUSTER_MERGE_STATE_ARTIFACT = "cluster_merge_state.json"
 
 
 def _build_progress_bar(*, total: int, initial: int, desc: str, unit: str) -> Any:
@@ -33,6 +38,78 @@ class _NullProgressBar:
 
     def close(self) -> None:
         return None
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+    temp_path.replace(path)
+
+
+def _cluster_unit_from_payload(payload: dict[str, object]) -> ClusterUnit:
+    return ClusterUnit(
+        question_id=int(payload["question_id"]),
+        error_tags=list(payload["error_tags"]),
+        root_cause=str(payload["root_cause"]),
+        ability_dimensions=list(payload["ability_dimensions"]),
+        language=str(payload["language"]),
+        category=str(payload["category"]),
+        one_line_content=str(payload["one_line_content"]),
+    )
+
+
+def _candidate_cluster_from_payload(payload: dict[str, object]) -> CandidateCluster:
+    return CandidateCluster(
+        candidate_id=str(payload["candidate_id"]),
+        member_question_ids=[int(item) for item in payload["member_question_ids"]],
+        member_tags=list(payload["member_tags"]),
+        representative_units=[_cluster_unit_from_payload(item) for item in payload["representative_units"]],
+        dominant_language=str(payload["dominant_language"]),
+        dominant_category=str(payload["dominant_category"]),
+    )
+
+
+def _refined_cluster_from_payload(payload: dict[str, object]) -> RefinedCluster:
+    return RefinedCluster(
+        refined_id=str(payload["refined_id"]),
+        name=str(payload["name"]),
+        description=str(payload["description"]),
+        covered_tags=list(payload["covered_tags"]),
+        member_question_ids=[int(item) for item in payload["member_question_ids"]],
+        representative_units=[_cluster_unit_from_payload(item) for item in payload["representative_units"]],
+        dominant_language=str(payload["dominant_language"]),
+        dominant_category=str(payload["dominant_category"]),
+    )
+
+
+def _load_candidate_clusters(path: Path) -> list[CandidateCluster]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, list):
+        raise ValueError("invalid cluster candidates artifact")
+    return [_candidate_cluster_from_payload(item) for item in payload]
+
+
+def _load_refined_checkpoint(path: Path) -> dict[str, list[RefinedCluster]]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, list):
+        raise ValueError("invalid cluster refined artifact")
+    refined_by_candidate_id: dict[str, list[RefinedCluster]] = {}
+    for item in payload:
+        candidate_id = str(item["candidate_id"])
+        refined_by_candidate_id[candidate_id] = [_refined_cluster_from_payload(cluster) for cluster in item["refined_clusters"]]
+    return refined_by_candidate_id
+
+
+def _load_merge_state(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError("invalid cluster merge state artifact")
+    return {
+        "current": [_refined_cluster_from_payload(item) for item in payload.get("current", [])],
+        "rejected_pairs": [list(pair) for pair in payload.get("rejected_pairs", [])],
+        "merge_index": payload.get("merge_index", 1),
+        "round_index": payload.get("round_index", 1),
+    }
 
 
 def _expect_array_payload(payload: Any, *, stage: str) -> list[dict[str, Any]]:
@@ -247,6 +324,10 @@ async def cluster_weaknesses(
         weakness_set = WeaknessSet.model_validate_json(output_path.read_text())
         return _validate_weakness_set(weakness_set, attributions=attributions)
 
+    candidates_path = output_path.with_name(CLUSTER_CANDIDATES_ARTIFACT)
+    refined_path = output_path.with_name(CLUSTER_REFINED_ARTIFACT)
+    merge_state_path = output_path.with_name(CLUSTER_MERGE_STATE_ARTIFACT)
+
     records_by_id = {record.question_id: record for record in eval_records if record.question_id is not None}
     tag_summaries: dict[str, list[dict[str, object]]] = {}
     for attribution in attributions:
@@ -272,30 +353,61 @@ async def cluster_weaknesses(
 
     min_items = 1 if attributions else 0
     if len(tag_summaries) > LARGE_INPUT_TAG_THRESHOLD:
-        print("Cluster: build units")
-        units = build_cluster_units(attributions=attributions, eval_records=eval_records)
-        print("Cluster: precluster")
-        candidates = propose_candidate_clusters(units)
-        print("Cluster: refine candidates")
-        refine_progress = _build_progress_bar(total=len(candidates), initial=0, desc="Cluster refine", unit="cluster")
-        try:
-            refined_clusters = await refine_candidate_clusters(
-                candidates,
+        merge_state = _load_merge_state(merge_state_path) if merge_state_path.exists() else None
+        if merge_state is not None:
+            print("Cluster: resume merge candidates")
+            refined_clusters = merge_state["current"]
+            weaknesses = await merge_refined_clusters(
+                refined_clusters,
                 provider=provider,
                 model=model,
                 provider_client=provider_client,
-                progress=refine_progress,
+                progress_factory=_build_progress_bar,
+                resume_state=merge_state,
+                checkpoint_path=merge_state_path,
             )
-        finally:
-            refine_progress.close()
-        print("Cluster: merge candidates")
-        weaknesses = await merge_refined_clusters(
-            refined_clusters,
-            provider=provider,
-            model=model,
-            provider_client=provider_client,
-            progress_factory=_build_progress_bar,
-        )
+        else:
+            resume_refined_by_candidate_id = _load_refined_checkpoint(refined_path) if refined_path.exists() else None
+            if resume_refined_by_candidate_id is not None:
+                print("Cluster: resume refine candidates")
+            if candidates_path.exists():
+                candidates = _load_candidate_clusters(candidates_path)
+            else:
+                print("Cluster: build units")
+                units = build_cluster_units(attributions=attributions, eval_records=eval_records)
+                print("Cluster: precluster")
+                candidates = propose_candidate_clusters(units)
+                _write_json_atomic(candidates_path, [asdict(candidate) for candidate in candidates])
+            if resume_refined_by_candidate_id is not None and set(resume_refined_by_candidate_id) >= {candidate.candidate_id for candidate in candidates}:
+                refined_clusters = [
+                    cluster
+                    for candidate in candidates
+                    for cluster in resume_refined_by_candidate_id.get(candidate.candidate_id, [])
+                ]
+            else:
+                print("Cluster: refine candidates")
+                refine_progress = _build_progress_bar(total=len(candidates), initial=0, desc="Cluster refine", unit="cluster")
+                try:
+                    refined_clusters = await refine_candidate_clusters(
+                        candidates,
+                        provider=provider,
+                        model=model,
+                        provider_client=provider_client,
+                        progress=refine_progress,
+                        resume_refined_by_candidate_id=resume_refined_by_candidate_id,
+                        checkpoint_path=refined_path,
+                    )
+                finally:
+                    refine_progress.close()
+            print("Cluster: merge candidates")
+            weaknesses = await merge_refined_clusters(
+                refined_clusters,
+                provider=provider,
+                model=model,
+                provider_client=provider_client,
+                progress_factory=_build_progress_bar,
+                checkpoint_path=merge_state_path,
+            )
     else:
         prompt_template = load_prompt("cluster.txt")
         blocks = _render_tag_summary_blocks(tag_summaries)
@@ -348,4 +460,6 @@ async def cluster_weaknesses(
     )
     _validate_weakness_set(weakness_set, attributions=attributions)
     output_path.write_text(weakness_set.model_dump_json(indent=2))
+    if merge_state_path.exists():
+        merge_state_path.unlink()
     return weakness_set

@@ -72,6 +72,12 @@ A successful run may produce:
   - failed eval records skipped before attribution because the raw JSONL line was too large
 - `weaknesses.json`
   - clustered weakness definitions and supporting question ids
+- `cluster_candidates.json`
+  - internal precluster checkpoint used to resume the `cluster` stage
+- `cluster_refined.json`
+  - internal refined-cluster checkpoint used to resume the `cluster` stage
+- `cluster_merge_state.json`
+  - internal merge-round checkpoint used to resume the `cluster` stage after interruption
 - `synthesized_problems.jsonl`
   - full internal synthesis records, including diversity-control metadata
 - `solver_view.jsonl`
@@ -258,6 +264,20 @@ By default, the pipeline runs with resume enabled.
 
 - `--resume` reuses existing stage artifacts when possible
 - `--no-resume` clears stage artifacts before the run
+
+For the `cluster` stage, resume now works at two levels:
+
+- final artifact resume: if `weaknesses.json` already exists, clustering is skipped entirely
+- internal checkpoint resume: if `weaknesses.json` does not exist, the pipeline can resume from intermediate `cluster` checkpoints
+
+Cluster checkpoint priority is:
+
+1. `cluster_merge_state.json`
+2. `cluster_refined.json` together with `cluster_candidates.json`
+3. `cluster_candidates.json`
+4. full recomputation from the original eval log and attributions
+
+This means an interrupted `cluster` run no longer has to restart from scratch in the common case. If final clustering succeeds, `cluster_merge_state.json` is cleaned up automatically; `cluster_candidates.json` and `cluster_refined.json` are intentionally retained as reusable local checkpoints.
 - `--restart` removes the entire output directory before starting
 
 If a run exits through an empty-analysis path, stale downstream synthesis artifacts are cleaned automatically.
